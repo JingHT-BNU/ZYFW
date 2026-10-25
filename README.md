@@ -40,7 +40,7 @@ python -m venv .venv
 
 1. 在 Edge 地址栏打开 `edge://settings/help`，记录浏览器版本号。
 2. 访问 [Microsoft Edge WebDriver 官方下载页](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/)。
-3. 下载与 Edge 版本、系统架构（通常为 x64）一致的 WebDriver。
+3. 下载与 Edge 版本、系统架构（通常为 x64）一致的 WebDriver。如果对应版本没找到，可直接更新edge到最新版本然后下载
 4. 解压压缩包，将 `msedgedriver.exe` 放到固定目录，例如：
 
    ```text
