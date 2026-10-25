@@ -21,11 +21,14 @@ legacy/
 Thumbs.db
 
 # Browser driver binaries and their bundled license files
+/msedgedriver
 /msedgedriver.exe
+/geckodriver
 /geckodriver.exe
+/chromedriver
 /chromedriver.exe
 /geckodriver.log
-/chrome-win64/
+/chrome-*/
 Driver_Notes/
 
 # Local environment files

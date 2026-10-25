@@ -1,6 +1,6 @@
 # ZYFW 大学生活工具集
 
-ZYFW 是一款面向北师大校园学习场景的 Windows 桌面工具箱。应用使用本地服务，并在独立浏览器窗口中运行，提供教务抢课、SPOC 学习和师道云学习辅助插件。
+ZYFW 是一款面向北师大校园学习场景的本地 Web 工具箱。应用在本机启动服务，并通过浏览器界面提供教务抢课、SPOC 学习和师道云学习辅助插件。
 
 所有账号配置、日志和插件缓存均保存在本机 `data/` 目录，不会随项目上传。
 
@@ -12,29 +12,36 @@ ZYFW 是一款面向北师大校园学习场景的 Windows 桌面工具箱。应
 | SPOC 刷课 | 自动播放 SPOC 课程视频，支持多线程、倍速和 Cookie 登录。 |
 | 师道云刷课 | 自动遍历师道云课程视频，根据服务器记录时长判断完成状态并继续学习。 |
 
-## 系统要求
+## 环境要求
 
-- Windows 10 或 Windows 11
 - Python 3.10 或更高版本
 - Microsoft Edge、Mozilla Firefox、Google Chrome 或 Chromium 等现代浏览器中的至少一种
 - 使用浏览器自动化插件时，需要与所选插件浏览器版本匹配的 WebDriver
 - 推荐使用 Edge，但 Edge 不是运行主窗口的必要条件
 
+ZYFW 的界面不绑定特定浏览器。当前发行版的一键启动脚本和凭据加密实现主要面向 Windows；在其他桌面系统上运行前，需要确认对应平台的启动方式和安全存储能力已经适配。
+
 ## 快速开始
 
 ### 1. 获取项目
 
-```powershell
+```console
 git clone https://github.com/JingHT-BNU/ZYFW.git
 cd ZYFW
 ```
 
 ### 2. 创建环境并安装依赖
 
-```powershell
+```console
 python -m venv .venv
+
+# Windows
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# macOS / Linux
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
 ### 3. 安装 WebDriver
@@ -47,44 +54,46 @@ python -m venv .venv
 
 1. 在 Edge 地址栏打开 `edge://settings/help`，记录浏览器版本号。
 2. 访问 [Microsoft Edge WebDriver 官方下载页](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/)。
-3. 下载与 Edge 版本和系统架构（通常为 x64）一致的 WebDriver。如果对应版本未提供，可先更新 Edge，再重新下载。
-4. 将 `msedgedriver.exe` 放到项目根目录，或放到任意固定目录。
+3. 下载与 Edge 版本、操作系统和系统架构一致的 WebDriver。如果对应版本未提供，可先更新 Edge，再重新下载。
+4. 将驱动文件放到项目根目录或任意固定目录；Windows 下的文件名通常为 `msedgedriver.exe`。
 
 #### Mozilla Firefox
 
 1. 访问 [GeckoDriver 官方发布页](https://github.com/mozilla/geckodriver/releases)。
-2. 下载适用于 Windows x64 的 GeckoDriver。
-3. 解压后将 `geckodriver.exe` 放到项目根目录，或放到任意固定目录。
+2. 下载适用于当前操作系统和系统架构的 GeckoDriver。
+3. 解压后将驱动文件放到项目根目录或任意固定目录；Windows 下的文件名通常为 `geckodriver.exe`。
 
 #### Chromium / Chrome for Testing
 
 1. 访问 [Chrome for Testing 官方下载页](https://googlechromelabs.github.io/chrome-for-testing/)。
-2. 选择与所需版本一致的 Win64 构建。
-3. 下载 `chrome-win64.zip` 和 `chromedriver-win64.zip`。
-4. 将 Chromium 解压到项目根目录的 `chrome-win64` 文件夹。
-5. 将 ChromeDriver 解压为项目根目录的 `chromedriver.exe`。
+2. 选择与所需版本、操作系统和系统架构一致的构建。
+3. 下载 Chromium 与 ChromeDriver 对应平台的压缩包。
+4. 将 Chromium 解压到项目目录或任意固定目录。
+5. 将 ChromeDriver 解压到项目目录或任意固定目录。
 
-项目根目录中的 `msedgedriver.exe`、`geckodriver.exe`、`chromedriver.exe` 和 `chrome-win64/` 均不会进入版本控制。
+项目根目录中的浏览器驱动、Chromium 程序和浏览器配置目录均不会进入版本控制。
 
-启动 ZYFW 后，在“全局设置 → 插件运行浏览器”中选择 Edge、Firefox 或 Chromium。驱动和浏览器位于项目默认位置时可留空路径；使用其他位置时，填写对应的完整路径。
+启动 ZYFW 后，在“全局设置 → 插件运行浏览器”中选择 Edge、Firefox 或 Chromium。驱动和浏览器位于当前平台可自动识别的位置时可留空路径；使用其他位置时，填写对应的完整路径。
 
 浏览器自动更新后，应同步更新对应 WebDriver。
 
 ### 4. 启动工具箱
 
-双击项目根目录中的 `start.bat`。程序会自动选择可用端口，优先打开独立的 Edge 应用窗口；未安装 Edge 时，回退到系统默认浏览器。
+在 Windows 上可双击项目根目录中的 `start.bat`。程序会自动选择可用端口，优先打开独立的 Edge 应用窗口；未安装 Edge 时，回退到系统默认浏览器。
 
 也可以使用命令行启动：
 
-```powershell
+```console
 .venv\Scripts\python.exe app\main.py --port 8765
 ```
 
 仅启动服务、不自动打开窗口：
 
-```powershell
+```console
 .venv\Scripts\python.exe app\main.py --no-window
 ```
+
+非 Windows 环境需要使用该平台对应的 Python 路径。在正式启动前，应确认本机服务、浏览器驱动和凭据存储均已满足运行条件。
 
 服务实际地址写入 `data/zyfw-gui.url`，运行日志写入 `data/logs/zyfw-gui.log`。
 
@@ -96,7 +105,7 @@ python -m venv .venv
 4. 保存配置，返回仪表盘并点击“启动”。
 5. 在插件详情页查看运行状态、实时日志、进度条和完成结果。
 
-密码使用 Windows DPAPI 加密存储，界面和 API 中只显示 `******`。插件账号留空时自动使用全局账号。
+在当前 Windows 发行版中，密码使用 DPAPI 加密存储，界面和 API 中只显示 `******`。其他平台部署应采用等效的安全凭据存储。插件账号留空时自动使用全局账号。
 
 ## 插件配置说明
 
@@ -134,7 +143,7 @@ python -m venv .venv
 
 **页面内容没有更新**
 
-完全退出 ZYFW 后重新运行 `start.bat`。主程序修改需要重启服务才能生效。
+完全退出 ZYFW 后重新启动服务。Windows 用户可重新运行 `start.bat`；主程序修改需要重启服务才能生效。
 
 **端口被占用**
 
