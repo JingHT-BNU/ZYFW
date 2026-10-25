@@ -93,6 +93,9 @@ def make_edge_options(headless: bool = True) -> Options:
     opt.add_argument("--disable-blink-features=AutomationControlled")
     opt.add_argument("--ignore-ssl-errors")
     opt.add_argument("--ignore-certificate-errors")
+    opt.add_argument("--autoplay-policy=no-user-gesture-required")
+    opt.add_argument("--disable-background-timer-throttling")
+    opt.add_argument("--disable-renderer-backgrounding")
     if headless:
         opt.add_argument("--headless")
         opt.add_argument("--disable-gpu")

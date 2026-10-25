@@ -1,0 +1,58 @@
+{
+  "id": "bdata-autoplay",
+  "name": "师道云刷课",
+  "version": "1.0.0",
+  "description": "登录北师大统一身份认证，自动遍历师道云课程中的视频，依据服务器观看进度与课程完成阈值倍速播放，支持多课程顺序执行。",
+  "entry": "plugin.py",
+  "config_schema": [
+    {
+      "key": "course_urls",
+      "label": "课程链接",
+      "type": "string-list",
+      "hint": "一行一个师道云课程 URL，例如 https://bdata.bnu.edu.cn/course?cid=..."
+    },
+    {
+      "key": "only_unfinished",
+      "label": "只刷未完成视频",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "speedup",
+      "label": "播放倍速",
+      "type": "number",
+      "default": 8,
+      "min": 1,
+      "max": 16,
+      "step": 0.5
+    },
+    {
+      "key": "completion_tolerance",
+      "label": "完成容差(秒)",
+      "type": "number",
+      "default": 3,
+      "min": 0,
+      "max": 30,
+      "step": 1,
+      "hint": "服务器记录时长距课程阈值不超过该秒数时视为完成"
+    },
+    {
+      "key": "headless",
+      "label": "无头模式",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "username",
+      "label": "统一认证账号(留空用全局)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "key": "password",
+      "label": "统一认证密码(留空用全局)",
+      "type": "password",
+      "default": ""
+    }
+  ]
+}

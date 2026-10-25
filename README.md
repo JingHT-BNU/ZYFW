@@ -8,6 +8,7 @@
 |---|---|---|
 | `course-grab` 教务抢课 | 轮询 zyfw.bnu.edu.cn 名额并自动提交,支持多课程/多班级候选 | `legacy/dun.py` + `legacy/main.py` |
 | `spoc-autoplay` SPOC 刷课 | 多线程播放 spoc.bnu.edu.cn 视频,倍速 + Cookie 免登录 | `legacy/spoc.py` |
+| `bdata-autoplay` 师道云刷课 | 按服务器记录时长倍速完成 bdata.bnu.edu.cn 课程视频,支持多课程和完成阈值 | 新增 |
 
 ## 启动
 
@@ -98,6 +99,7 @@ python app\selftest_api.py     # REST/WebSocket 集成
 python app\selftest_catalog.py # 专业目录/课程列表端点(缓存读取与任务守卫)
 python app\selftest_catalog_ckpt.py # 目录抓取检查点/断点续抓/自动重启逻辑(离线桩)
 python app\selftest_plugins.py # 抢课候选/自动轮询与 SPOC 去重/参数校验(离线桩)
+python app\selftest_bdata.py # 师道云 URL、视频目录、时长与完成阈值(离线)
 node app\selftest_ui_grab_progress.js # 配置界面抓取进度条行为(离线 DOM 桩, 需 Node)
 python app\selftest_ui.py      # 真实浏览器渲染冒烟(需先启动服务)
 python app\selftest_ui20.py    # SPOC 2.0 配置表单走查(需先启动服务)
