@@ -1529,6 +1529,7 @@ def run_quiz_item(ctx: PluginContext, driver, broker: ReviewBroker,
         survey_negative_value=ctx.cfg("survey_negative_value", 1),
     )
     model_fields = [field for field in fields if field.get("type") != "scale"]
+    review_fields = [field for field in fields if not field.get("readonly")]
     ctx.status(f"正在生成答案: {test_title}")
     answers = generate_quiz_answers(
         *model, course_title, test_title, model_fields)
@@ -1539,7 +1540,7 @@ def run_quiz_item(ctx: PluginContext, driver, broker: ReviewBroker,
             "selected", []) if field["type"] == "multiple" else answer.get(
             "text", "")
     ctx.log(f"模型已生成 {test_title} 的答案，等待用户核验")
-    response = broker.ask("quiz", f"测验：{test_title}", fields)
+    response = broker.ask("quiz", f"测验：{test_title}", review_fields)
     if not response or response.get("action") == "skip":
         ctx.log(f"用户跳过测验: {test_title}")
         return False

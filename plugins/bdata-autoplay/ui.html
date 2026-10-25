@@ -116,7 +116,7 @@
     </div>
     <div class="zy-hint">
       模型使用工具调用返回单选、多选和简答答案；简答题约 200 字。
-      量表题由所选策略自动填写，在答案核验区只读展示，不需要逐题确认。
+      量表题由所选策略自动填写，不会出现在答案核验区，也不需要逐题确认。
     </div>
   </div>
 
@@ -215,16 +215,7 @@
     var type = field.type || "text";
     var value = field.value;
 
-    if (type === "scale" && field.readonly) {
-      var automatic = document.createElement("div");
-      automatic.className = "zy-review-auto-value";
-      var selectedOption = optionList(field).find(function (option) {
-        return String(option.value) === String(value);
-      });
-      automatic.textContent = "自动选择：" +
-        (selectedOption ? selectedOption.label : value) + "（无需修改）";
-      card.appendChild(automatic);
-    } else if (type === "single" || type === "scale") {
+    if (type === "single" || type === "scale") {
       var select = document.createElement("select");
       select.dataset.key = field.key;
       select.dataset.type = type;
@@ -279,11 +270,13 @@
     }
     if (request.id === requestId) return;
     requestId = request.id;
-    currentFields = Array.isArray(request.fields) ? request.fields : [];
+    currentFields = Array.isArray(request.fields)
+      ? request.fields.filter(function (field) { return field.type !== "scale"; })
+      : [];
     $("bdata-review-title").textContent = request.title || "等待核验";
     $("bdata-review-meta").textContent =
       request.kind === "quiz"
-        ? "请核对并修改模型答案；量表题已按策略自动填写。确认后才会提交试卷。"
+        ? "请核对并修改模型答案；量表题已按策略自动填写并从本列表隐藏。确认后才会提交试卷。"
         : "请核对并修改评论与回复。确认后才会发表。";
     var context = $("bdata-review-context");
     context.textContent = "";
@@ -309,9 +302,7 @@
       var key = field.key;
       var type = field.type || "text";
       var value = "";
-      if (type === "scale" && field.readonly) {
-        value = field.value;
-      } else if (type === "single" || type === "scale") {
+      if (type === "single" || type === "scale") {
         var select = root.querySelector('select[data-key="' + CSS.escape(String(key)) + '"]');
         value = select ? select.value : String(field.value || "");
       } else if (type === "multiple") {

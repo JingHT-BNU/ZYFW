@@ -343,11 +343,6 @@ html, body, #app {
   background: var(--zyfw-log-bg);
 }
 .zy-review-field > label { font-weight: 600; line-height: 1.55; }
-.zy-review-auto-value {
-  font-size: 13px;
-  color: var(--zyfw-accent);
-  line-height: 1.6;
-}
 .zy-review-options { display: flex; flex-wrap: wrap; gap: 8px 18px; }
 .zy-review-options label { white-space: normal; }
 .zy-review-context { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
