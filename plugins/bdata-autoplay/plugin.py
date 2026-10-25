@@ -77,7 +77,14 @@ SURVEY_QUESTIONS = (
     "我认为本章所学内容能应用到实际生活或未来的工作中。",
     "我对必须完成的学习任务感到厌烦。",
 )
-SURVEY_VALUES = (1, 1, 1, 3, 1)
+SURVEY_VALENCES = (-1, -1, -1, 1, -1)
+SURVEY_OPTIONS = (
+    ("0", "非常不同意"),
+    ("1", "不同意"),
+    ("2", "一般"),
+    ("3", "同意"),
+    ("4", "非常同意"),
+)
 
 DURATION_RE = re.compile(
     r"(?:观看视频|视频时长|学习时长)?\s*"
@@ -157,6 +164,36 @@ def completion_gap(media_duration: float, tolerance: float) -> float:
 def is_complete(watched: float, media_duration: float, tolerance: float) -> bool:
     return (media_duration > 0
             and watched + completion_gap(media_duration, tolerance) >= media_duration)
+
+
+def survey_choice(value: object, default: int) -> str:
+    raw = str(value if value is not None else default).strip()
+    for option_value, label in SURVEY_OPTIONS:
+        if raw == label:
+            return option_value
+    try:
+        number = int(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        return str(default)
+    return str(min(4, max(0, number)))
+
+
+def survey_normal_value(z_score: float | None = None) -> str:
+    """Map a standard-normal draw onto the five-point Likert scale.
+
+    The mean is "一般". A value at 2 sigma is "同意/不同意", and a value
+    at 3 sigma is "非常同意/非常不同意".
+    """
+    z = random.gauss(0.0, 1.0) if z_score is None else float(z_score)
+    if z >= 3:
+        return "4"
+    if z >= 2:
+        return "3"
+    if z <= -3:
+        return "0"
+    if z <= -2:
+        return "1"
+    return "2"
 
 
 def cookie_file(ctx: PluginContext) -> Path:
@@ -564,7 +601,9 @@ def close_task_dialog(driver) -> None:
     raise RuntimeError("任务进度窗口未能关闭")
 
 
-def read_quiz_fields(driver) -> list[dict]:
+def read_quiz_fields(driver, survey_strategy: str = "fixed",
+                     survey_positive_value: object = 3,
+                     survey_negative_value: object = 1) -> list[dict]:
     deadline = time.time() + 25
     rows: list[dict] = []
     while time.time() < deadline:
@@ -601,6 +640,11 @@ def read_quiz_fields(driver) -> list[dict]:
     if not rows:
         raise RuntimeError("未识别到答题界面")
 
+    strategy = str(survey_strategy or "fixed").strip().lower()
+    if strategy not in {"fixed", "normal"}:
+        strategy = "fixed"
+    positive_value = survey_choice(survey_positive_value, 3)
+    negative_value = survey_choice(survey_negative_value, 1)
     fields: list[dict] = []
     for row in rows:
         qid = str(row.get("id") or "")
@@ -611,18 +655,21 @@ def read_quiz_fields(driver) -> list[dict]:
         card_text = normalize_title(row.get("cardText"))
         if (radio_groups >= 5 and "非常不同意" in card_text
                 and "非常同意" in card_text):
-            for index, (label, value) in enumerate(
-                    zip(SURVEY_QUESTIONS, SURVEY_VALUES, strict=True)):
+            for index, (label, valence) in enumerate(
+                    zip(SURVEY_QUESTIONS, SURVEY_VALENCES, strict=True)):
+                value = survey_normal_value() if strategy == "normal" else (
+                    positive_value if valence > 0 else negative_value)
                 fields.append({
                     "key": f"{qid}_survey_{index}",
                     "label": f"量表 {index + 1}：{label}",
                     "type": "scale",
                     "options": [
-                        {"value": str(i), "label": label_}
-                        for i, label_ in enumerate(
-                            ("非常不同意", "不同意", "一般", "同意", "非常同意"))
+                        {"value": option_value, "label": label_}
+                        for option_value, label_ in SURVEY_OPTIONS
                     ],
-                    "value": str(value),
+                    "value": value,
+                    "readonly": True,
+                    "strategy": strategy,
                     "control_id": qid,
                     "group_index": index,
                 })
@@ -1456,7 +1503,7 @@ def _reviewed_fields(fields: list[dict], response: dict | None) -> list[dict]:
         for item in raw_fields if isinstance(item, dict) and item.get("key")
     }
     for field in fields:
-        if field.get("key") in reviewed:
+        if not field.get("readonly") and field.get("key") in reviewed:
             field["value"] = reviewed[field["key"]]
     return fields
 
@@ -1475,7 +1522,12 @@ def run_quiz_item(ctx: PluginContext, driver, broker: ReviewBroker,
                   model: tuple[str, str, str]) -> bool:
     open_task_dialog(driver)
     click_task_entry(driver, test_title)
-    fields = read_quiz_fields(driver)
+    fields = read_quiz_fields(
+        driver,
+        survey_strategy=str(ctx.cfg("survey_strategy", "fixed")),
+        survey_positive_value=ctx.cfg("survey_positive_value", 3),
+        survey_negative_value=ctx.cfg("survey_negative_value", 1),
+    )
     model_fields = [field for field in fields if field.get("type") != "scale"]
     ctx.status(f"正在生成答案: {test_title}")
     answers = generate_quiz_answers(

@@ -299,6 +299,7 @@ html, body, #app {
 
 /* ---------- 插件自定义配置界面宿主风格(config_ui 专用, 插件 HTML 不得自带 CSS) ---------- */
 .zy-config { display: flex; flex-direction: column; gap: 14px; width: 100%; }
+.zy-config [hidden] { display: none !important; }
 .zy-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .zy-field { display: flex; flex-direction: column; gap: 4px; }
 .zy-field > label { font-size: 12px; color: var(--zyfw-text-secondary); }
@@ -342,6 +343,11 @@ html, body, #app {
   background: var(--zyfw-log-bg);
 }
 .zy-review-field > label { font-weight: 600; line-height: 1.55; }
+.zy-review-auto-value {
+  font-size: 13px;
+  color: var(--zyfw-accent);
+  line-height: 1.6;
+}
 .zy-review-options { display: flex; flex-wrap: wrap; gap: 8px 18px; }
 .zy-review-options label { white-space: normal; }
 .zy-review-context { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }

@@ -81,9 +81,42 @@
         <input type="text" id="bdata-model-id" placeholder="deepseek-flash">
       </div>
     </div>
+    <div class="zy-row">
+      <div class="zy-field">
+        <label>量表答题策略</label>
+        <select id="bdata-survey-strategy">
+          <option value="fixed">固定正负策略</option>
+          <option value="normal">正态分布策略</option>
+        </select>
+      </div>
+      <div class="zy-field" id="bdata-survey-fixed">
+        <label>正向题固定选择</label>
+        <select id="bdata-survey-positive">
+          <option value="0">非常不同意</option>
+          <option value="1">不同意</option>
+          <option value="2">一般</option>
+          <option value="3">同意</option>
+          <option value="4">非常同意</option>
+        </select>
+      </div>
+      <div class="zy-field" id="bdata-survey-negative-field">
+        <label>负向题固定选择</label>
+        <select id="bdata-survey-negative">
+          <option value="0">非常不同意</option>
+          <option value="1">不同意</option>
+          <option value="2">一般</option>
+          <option value="3">同意</option>
+          <option value="4">非常同意</option>
+        </select>
+      </div>
+    </div>
+    <div class="zy-hint" id="bdata-survey-normal-hint" hidden>
+      正态分布策略以“一般”为均值，约 2 倍标准差映射为“同意/不同意”，
+      约 3 倍标准差映射为“非常同意/非常不同意”；每题独立随机选择。
+    </div>
     <div class="zy-hint">
       模型使用工具调用返回单选、多选和简答答案；简答题约 200 字。
-      量表题按需求固定为：负向题“不同意”、正向题“同意”。
+      量表题由所选策略自动填写，在答案核验区只读展示，不需要逐题确认。
     </div>
   </div>
 
@@ -139,7 +172,10 @@
       password: $("bdata-password").value,
       api_url: $("bdata-api-url").value.trim(),
       api_key: $("bdata-api-key").value,
-      model_id: $("bdata-model-id").value.trim()
+      model_id: $("bdata-model-id").value.trim(),
+      survey_strategy: $("bdata-survey-strategy").value,
+      survey_positive_value: $("bdata-survey-positive").value,
+      survey_negative_value: $("bdata-survey-negative").value
     };
   }
 
@@ -147,6 +183,13 @@
     var qa = $("bdata-mode").value === "qa";
     $("bdata-study-settings").hidden = qa;
     $("bdata-qa-settings").hidden = !qa;
+  }
+
+  function syncSurveyStrategy() {
+    var normal = $("bdata-survey-strategy").value === "normal";
+    $("bdata-survey-fixed").hidden = normal;
+    $("bdata-survey-negative-field").hidden = normal;
+    $("bdata-survey-normal-hint").hidden = !normal;
   }
 
   async function save() {
@@ -172,7 +215,16 @@
     var type = field.type || "text";
     var value = field.value;
 
-    if (type === "single" || type === "scale") {
+    if (type === "scale" && field.readonly) {
+      var automatic = document.createElement("div");
+      automatic.className = "zy-review-auto-value";
+      var selectedOption = optionList(field).find(function (option) {
+        return String(option.value) === String(value);
+      });
+      automatic.textContent = "自动选择：" +
+        (selectedOption ? selectedOption.label : value) + "（无需修改）";
+      card.appendChild(automatic);
+    } else if (type === "single" || type === "scale") {
       var select = document.createElement("select");
       select.dataset.key = field.key;
       select.dataset.type = type;
@@ -231,7 +283,7 @@
     $("bdata-review-title").textContent = request.title || "等待核验";
     $("bdata-review-meta").textContent =
       request.kind === "quiz"
-        ? "请核对并修改测验答案。确认后才会填写并提交试卷。"
+        ? "请核对并修改模型答案；量表题已按策略自动填写。确认后才会提交试卷。"
         : "请核对并修改评论与回复。确认后才会发表。";
     var context = $("bdata-review-context");
     context.textContent = "";
@@ -257,7 +309,9 @@
       var key = field.key;
       var type = field.type || "text";
       var value = "";
-      if (type === "single" || type === "scale") {
+      if (type === "scale" && field.readonly) {
+        value = field.value;
+      } else if (type === "single" || type === "scale") {
         var select = root.querySelector('select[data-key="' + CSS.escape(String(key)) + '"]');
         value = select ? select.value : String(field.value || "");
       } else if (type === "multiple") {
@@ -329,11 +383,19 @@
       cfg.api_url || "https://api.deepseek.com";
     $("bdata-api-key").value = cfg.api_key || "";
     $("bdata-model-id").value = cfg.model_id || "deepseek-flash";
+    $("bdata-survey-strategy").value =
+      cfg.survey_strategy === "normal" ? "normal" : "fixed";
+    $("bdata-survey-positive").value =
+      cfg.survey_positive_value != null ? String(cfg.survey_positive_value) : "3";
+    $("bdata-survey-negative").value =
+      cfg.survey_negative_value != null ? String(cfg.survey_negative_value) : "1";
     $("bdata-mode").addEventListener("change", syncMode);
+    $("bdata-survey-strategy").addEventListener("change", syncSurveyStrategy);
     $("bdata-save").addEventListener("click", save);
     $("bdata-approve").addEventListener("click", function () { decide("approve"); });
     $("bdata-skip").addEventListener("click", function () { decide("skip"); });
     syncMode();
+    syncSurveyStrategy();
     await pollReview();
     setInterval(pollReview, 2000);
   })().catch(function (e) {

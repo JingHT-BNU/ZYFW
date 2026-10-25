@@ -1,8 +1,8 @@
 {
   "id": "bdata-autoplay",
   "name": "师道云刷课",
-  "version": "2.0.0",
-  "description": "支持师道云刷课与答题互动：可并行播放必修视频，也可调用兼容 OpenAI Chat 接口的模型生成测验答案、课程评论和回复，并在用户确认后提交。",
+  "version": "2.1.0",
+  "description": "支持师道云刷课与答题互动：可并行播放必修视频，也可调用兼容 OpenAI Chat 接口的模型生成测验答案、课程评论和回复，并在用户确认后提交；课程量表可按固定策略或正态分布自动选择。",
   "entry": "plugin.py",
   "config_ui": "ui.html",
   "config_schema": [
@@ -54,6 +54,30 @@
       "max": 30,
       "step": 1,
       "hint": "服务器记录时长距视频总时长不超过该秒数或 1% 时视为完成"
+    },
+    {
+      "key": "survey_strategy",
+      "label": "量表答题策略",
+      "type": "choice",
+      "default": "fixed",
+      "choices": ["fixed", "normal"],
+      "choice_labels": ["固定正负策略", "正态分布策略"]
+    },
+    {
+      "key": "survey_positive_value",
+      "label": "正向题固定选项",
+      "type": "choice",
+      "default": "3",
+      "choices": ["0", "1", "2", "3", "4"],
+      "choice_labels": ["非常不同意", "不同意", "一般", "同意", "非常同意"]
+    },
+    {
+      "key": "survey_negative_value",
+      "label": "负向题固定选项",
+      "type": "choice",
+      "default": "1",
+      "choices": ["0", "1", "2", "3", "4"],
+      "choice_labels": ["非常不同意", "不同意", "一般", "同意", "非常同意"]
     },
     {
       "key": "headless",
