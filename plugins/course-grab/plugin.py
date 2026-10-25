@@ -1,6 +1,5 @@
 """教务抢课插件:轮询 zyfw.bnu.edu.cn 课程名额并自动提交;支持专业目录/课程列表抓取。
 
-改造自 legacy/dun.py(自动轮询)与 legacy/main.py(单次选课)。
 配置示例:
 {
   "mode": "auto",           // auto=轮询抢课, once=单次
@@ -652,7 +651,7 @@ def run_auto_mode(ctx, courses: dict, poll_interval: float) -> None:
 
 
 def _normalize_courses(raw) -> dict[str, list[str]]:
-    """Normalize legacy string/list class selections into string lists."""
+    """Normalize string and list class selections into string lists."""
     if not isinstance(raw, dict):
         return {}
     out: dict[str, list[str]] = {}

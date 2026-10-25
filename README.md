@@ -1,107 +1,129 @@
 # ZYFW 大学生活工具集
 
-带现代 GUI 的校园自动化工具箱。内置插件:
+ZYFW 是一款面向北师大校园学习场景的 Windows 桌面工具箱。应用采用本地服务与 Edge 浏览器窗口运行，提供教务抢课、SPOC 学习和师道云学习辅助插件。
 
-> 面向 AI Agent / 新维护者的交接文档见 [HANDOVER.md](HANDOVER.md)(架构、开发历程、坑位与测试体系)。
+所有账号配置、日志和插件缓存均保存在本机 `data/` 目录，不会随项目上传。
 
-| 插件 | 功能 | 改造自 |
-|---|---|---|
-| `course-grab` 教务抢课 | 轮询 zyfw.bnu.edu.cn 名额并自动提交,支持多课程/多班级候选 | `legacy/dun.py` + `legacy/main.py` |
-| `spoc-autoplay` SPOC 刷课 | 多线程播放 spoc.bnu.edu.cn 视频,倍速 + Cookie 免登录 | `legacy/spoc.py` |
-| `bdata-autoplay` 师道云刷课 | 按服务器记录时长倍速完成 bdata.bnu.edu.cn 课程视频,支持多课程和完成阈值 | 新增 |
+## 主要功能
 
-## 启动
+| 插件 | 功能 |
+|---|---|
+| 教务抢课 | 按专业获取课程列表，轮询课程名额并提交选课；支持多课程与候选班级。 |
+| SPOC 刷课 | 自动播放 SPOC 课程视频，支持多线程、倍速和 Cookie 登录。 |
+| 师道云刷课 | 自动遍历师道云课程视频，根据服务器记录时长判断完成状态并继续学习。 |
 
-双击 `start.bat`(首次使用先完成下方安装)。
+## 系统要求
 
-默认自动选择空闲端口(8765 起)并弹出独立 Edge 窗口;也可命令行指定:
+- Windows 10 或 Windows 11
+- Python 3.10 或更高版本
+- Microsoft Edge
+- 与 Edge 版本匹配的 Microsoft Edge WebDriver
 
+## 快速开始
+
+### 1. 获取项目
+
+```powershell
+git clone https://github.com/JingHT-BNU/ZYFW.git
+cd ZYFW
 ```
-python app\main.py --port 8765
-python app\main.py --no-window   # 只起服务,浏览器访问打印的地址
+
+### 2. 创建环境并安装依赖
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-关闭窗口后,服务在 8 秒宽限期(防页面刷新误判)内无任何客户端重连即自动退出,并停止所有运行中的插件子进程;`--no-window` 方式启动的服务不会自动退出。GUI 运行日志见 `data/logs/zyfw-gui.log`。
+### 3. 安装 Microsoft Edge WebDriver
 
-## 首次安装(已装过可跳过)
+1. 在 Edge 地址栏打开 `edge://settings/help`，记录浏览器版本号。
+2. 访问 [Microsoft Edge WebDriver 官方下载页](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/)。
+3. 下载与 Edge 版本、系统架构（通常为 x64）一致的 WebDriver。
+4. 解压压缩包，将 `msedgedriver.exe` 放到固定目录，例如：
 
+   ```text
+   C:\Tools\EdgeDriver\msedgedriver.exe
+   ```
+
+5. 启动 ZYFW 后，在“全局设置 → EdgeDriver 路径”中填写该文件的完整路径。
+
+Edge 自动更新后，应重新下载对应版本的 WebDriver，避免出现浏览器启动失败。
+
+### 4. 启动工具箱
+
+双击项目根目录中的 `start.bat`。程序会自动选择可用端口并打开独立的 Edge 应用窗口。
+
+也可以使用命令行启动：
+
+```powershell
+.venv\Scripts\python.exe app\main.py --port 8765
 ```
-pip install -r requirements.txt
+
+仅启动服务、不自动打开窗口：
+
+```powershell
+.venv\Scripts\python.exe app\main.py --no-window
 ```
 
-## 使用流程
+服务实际地址写入 `data/zyfw-gui.url`，运行日志写入 `data/logs/zyfw-gui.log`。
 
-1. **全局设置**:填入北师大统一身份认证账号(教务系统 / SPOC 通用,密码 DPAPI 加密存于 `data/global.json`;旧版双账号配置自动迁移)
-2. **插件详情 → 插件配置**(教务抢课为自定义界面,与教务系统一致):
-   - 选择 培养层次/年级/院(系)/部 → 自动显示已缓存的课程列表 → 勾选要抢的课程(候选班级留空=不限班级);点「开始专业课程抓取」可抓取/更新当前专业的课程缓存,完成后自动列出(无需启动插件)
-   - 配置允许为空保存(先设置无头模式等基础选项,课程以后再选);运行模式只有 轮询选课/单次选课 两种
-   - 首次打开会提示抓取专业目录(全局共用一份,点击「抓取专业目录」开始;抓取失败会在页面提示并可重试,重试会自动跳过已抓取的组合续抓;瞬时网络中断会自动重启续抓,无需人工干预;抓取中每 50 个组合自动保存进度,配置页显示进度条与预计剩余时间)
-   - 更新课程缓存:选好专业后点「开始专业课程抓取」,完成后课程列表自动列出
-   - SPOC 刷课 (2.1):粘贴课程**学习内容页**链接(studycontent 页 URL,一行一个);留空则自动遍历全部已选课程
-     - 默认只刷未完成视频,已完成的自动跳过
-     - 完成判定以播放页"完成度"元素为准(显示"已完成"才计数,服务器没记录不算完成)
-     - 运行日志下方按线程分块展示:所刷视频标题、服务器进度条、剩余时长、预计完成时间
-     - 某平台账号密码与统一认证不同时,在插件配置中单独填写即可覆盖
-3. **仪表盘 → 启动**:实时日志与进度条在插件详情页查看
+### 5. 完成初始配置
+
+1. 打开“全局设置”，填写北师大统一身份认证账号和密码。
+2. 打开目标插件的“配置 / 日志”页面，填写课程链接、运行参数和插件专用账号。
+3. 保存配置，返回仪表盘并点击“启动”。
+4. 在插件详情页查看运行状态、实时日志、进度条和完成结果。
+
+密码使用 Windows DPAPI 加密存储，界面和 API 中只显示 `******`。插件账号留空时自动使用全局账号。
+
+## 插件配置说明
+
+### 教务抢课
+
+- 首先抓取专业目录，再选择培养层次、年级、学院和专业。
+- 点击“开始专业课程抓取”获取课程列表。
+- 勾选目标课程，并可填写候选班级；候选班级留空表示不限班级。
+- 支持轮询选课和单次选课两种模式。
+
+### SPOC 刷课
+
+- 可粘贴一个或多个课程学习内容页链接。
+- 链接留空时，插件将遍历账号下的已选课程。
+- 支持未完成筛选、并发浏览器数、播放倍速和无头模式。
+
+### 师道云刷课
+
+- 在插件配置中每行填写一个 `https://bdata.bnu.edu.cn/course?cid=...` 课程链接。
+- 插件优先使用页面显示的课程时长要求，并核对服务器记录的观看进度。
+- 支持未完成筛选、播放倍速、完成容差和无头模式。
+
+## 数据与安全
+
+- `data/` 保存账号配置、Cookie、课程缓存和日志，已被项目排除。
+- 请勿将 `data/`、浏览器配置目录或导出的 Cookie 发送给他人。
+- 插件在本机以当前用户权限运行，安装第三方插件前应审查其代码。
+- 关闭 GUI 窗口后，本地服务和运行中的插件进程会自动停止。
+
+## 常见问题
+
+**浏览器无法启动**
+
+确认 `msedgedriver.exe` 与当前 Edge 版本一致，并检查全局设置中的驱动路径。
+
+**页面内容没有更新**
+
+完全退出 ZYFW 后重新运行 `start.bat`。主程序修改需要重启服务才能生效。
+
+**端口被占用**
+
+程序会自动选择其他端口；实际地址以 `data/zyfw-gui.url` 或启动日志为准。
+
+**登录失败**
+
+检查统一身份认证账号，并确认对应校园系统当前可以正常访问。
 
 ## 插件开发
 
-任何 selenium 自动化脚本都可打包为插件。结构:
-
-```
-my-plugin/
-├── plugin.json     # 清单:id/name/version/entry/config_schema
-└── plugin.py       # 入口,读 --config <json> --datadir <dir>
-```
-
-`config_schema` 声明表单字段,前端自动渲染。支持类型:
-`string / password / number / bool / choice / string-list / course-table / specialty`
-
-**自定义配置界面**(可选):在 plugin.json 中声明 `"config_ui": "ui.html"`,提供插件目录内的单个 HTML 文件(不含 `<style>` 与内联样式,风格由宿主 `zy-*` 类统一保证,后端下发前也会强制剥离)。界面脚本通过 `window.ZyfwConfigUI` 与宿主交互:
-
-```js
-await ZyfwConfigUI.getConfig()          // 读取配置(密码为 ****** 打码)
-await ZyfwConfigUI.saveConfig(obj)      // 保存配置(****** 字段后端保持原值)
-await ZyfwConfigUI.api(path, options)   // fetch("/api/"+path), 按 content-type 解析
-await ZyfwConfigUI.post(path, body)     // 便捷 POST JSON
-ZyfwConfigUI.message(type, text)        // success/warning/error/info 顶部消息
-```
-
-未声明 `config_ui` 的插件继续使用 `config_schema` 简易表单,两种方式完全兼容。
-
-插件里 `print()` 即日志;进度用:
-
-```python
-from _sdk.sdk import PluginContext
-ctx = PluginContext()
-ctx.progress(done=3, total=100)      # 前端渲染进度条
-ctx.status("已提交选课 GEN06122")     # 前端高亮状态
-```
-
-在"插件管理"页上传 zip 即完成安装。
-
-## 目录说明
-
-```
-app/          GUI 服务(FastAPI + Vue3 前端)
-plugins/      内置插件与 _sdk 公共库;installed/ 存放用户安装的插件
-data/         配置(DPAPI 加密)、日志、cookie 缓存
-legacy/       旧脚本归档(含明文密码,建议改密后删除)
-.venv/        Python 虚拟环境
-```
-
-## 测试
-
-```
-python app\selftest.py         # DPAPI + 配置存储 + 插件发现
-python app\selftest_runner.py  # 子进程启停与事件采集
-python app\selftest_api.py     # REST/WebSocket 集成
-python app\selftest_catalog.py # 专业目录/课程列表端点(缓存读取与任务守卫)
-python app\selftest_catalog_ckpt.py # 目录抓取检查点/断点续抓/自动重启逻辑(离线桩)
-python app\selftest_plugins.py # 抢课候选/自动轮询与 SPOC 去重/参数校验(离线桩)
-python app\selftest_bdata.py # 师道云 URL、视频目录、时长与完成阈值(离线)
-node app\selftest_ui_grab_progress.js # 配置界面抓取进度条行为(离线 DOM 桩, 需 Node)
-python app\selftest_ui.py      # 真实浏览器渲染冒烟(需先启动服务)
-python app\selftest_ui20.py    # SPOC 2.0 配置表单走查(需先启动服务)
-python app\selftest_ui21.py    # SPOC 2.1 线程面板走查(需先启动服务,会临时改插件配置)
-```
+插件清单、运行时协议、配置表单、自定义 UI、事件上报和安装规范参见 [插件开发指南](PLUGIN_DEVELOPMENT.md)。
