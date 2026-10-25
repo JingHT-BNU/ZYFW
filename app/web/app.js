@@ -384,6 +384,7 @@
           percent: typeof w.percent === "number" ? w.percent : null,
           etaS: (w.eta_s === null || w.eta_s === undefined) ? null : w.eta_s,
           totalS: (w.total_s === null || w.total_s === undefined) ? null : w.total_s,
+          replays: w.replays || 0,
         }));
       }
 
@@ -391,7 +392,7 @@
         if (s === "已完成") return "success";
         if (s === "出错" || s === "崩溃") return "danger";
         if (s === "空闲" || s === "已关闭") return "info";
-        if (s === "播放中") return "";
+        if (s === "播放中" || s === "重播中") return "";
         return "warning";
       }
 
@@ -822,6 +823,7 @@
                 <span>时长 {{ fmtDur(w.totalS) }}</span>
                 <span>剩余 {{ fmtEta(w.etaS) }}</span>
                 <span>预计 {{ fmtEtaClock(w.etaS) }} 完成</span>
+                <span v-if="w.replays">重播 {{ w.replays }} 次</span>
               </div>
             </template>
           </div>

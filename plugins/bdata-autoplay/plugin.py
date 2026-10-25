@@ -120,6 +120,13 @@ def bounded_float(value: object, default: float, low: float, high: float) -> flo
     return min(high, max(low, number))
 
 
+def positive_int(value: object, default: int) -> int:
+    try:
+        return max(1, int(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        return max(1, default)
+
+
 def completion_gap(media_duration: float, tolerance: float) -> float:
     """Allow explicit tolerance plus 1% for whole-second server rounding."""
     return max(max(0.0, tolerance), max(0.0, media_duration) * 0.01)
@@ -473,6 +480,31 @@ def start_or_resume_video(driver, watched: float, speedup: float) -> None:
     )
 
 
+def restart_video_from_start(driver, speedup: float) -> bool:
+    """Rewind when the local player ended but the server is still incomplete."""
+    try:
+        return bool(driver.execute_script(
+            """
+            const v = document.querySelector('#player video, video');
+            if (!v || !(v.duration > 0)) return false;
+            try {
+                v.pause();
+                v.currentTime = 0;
+            } catch (e) {
+                return false;
+            }
+            v.muted = true;
+            v.playbackRate = arguments[0];
+            const played = v.play();
+            if (played && played.catch) played.catch(() => {});
+            return true;
+            """,
+            speedup,
+        ))
+    except WebDriverException:
+        return False
+
+
 def wait_video_duration(driver, timeout: float = 20.0) -> float:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -507,7 +539,8 @@ def play_until_complete(driver, title: str, media_duration: float,
     last_media = -1.0
     stalled_rounds = 0
     server_watched = watched
-    local_ended_at: float | None = None
+    restart_count = 0
+    next_restart_at = 0.0
 
     while time.time() - started < max_wait:
         state = video_state(driver)
@@ -555,12 +588,31 @@ def play_until_complete(driver, title: str, media_duration: float,
                     "target_seconds": round(media_duration, 1),
                     "percent": round(percent, 1),
                     "eta_s": round(remain),
+                    "replays": restart_count,
                 })
 
-        if state.get("ended"):
-            local_ended_at = local_ended_at or now
-        else:
-            local_ended_at = None
+        # A previously watched local video may already be at its end while the
+        # server still has incomplete time. The player cannot progress from
+        # that state, so replay from zero until server completion.
+        if (state.get("ended") and now >= next_restart_at
+                and restart_video_from_start(driver, speedup)):
+            restart_count += 1
+            next_restart_at = now + 2.0
+            last_media = -1.0
+            stalled_rounds = 0
+            if on_progress:
+                on_progress({
+                    "title": title,
+                    "watched_seconds": round(server_watched, 1),
+                    "target_seconds": round(media_duration, 1),
+                    "percent": round(server_watched / media_duration * 100, 1),
+                    "eta_s": round(max(
+                        0.0, media_duration - server_watched) / max(1.0, speedup)),
+                    "replays": restart_count,
+                    "replaying": True,
+                })
+            time.sleep(0.5)
+            continue
         if current <= last_media + 0.05:
             stalled_rounds += 1
         else:
@@ -569,8 +621,6 @@ def play_until_complete(driver, title: str, media_duration: float,
         if stalled_rounds >= 15 and not state.get("ended"):
             start_or_resume_video(driver, server_watched, speedup)
             stalled_rounds = 0
-        if local_ended_at is not None and now - local_ended_at > 30:
-            break
         time.sleep(1.0)
 
     try:
@@ -665,9 +715,10 @@ def run_worker(ctx: PluginContext, worker_id: int, jobs: queue.Queue,
                     eta_s=None, total_s=None)
                 return
             title = job["title"]
+            course_title = job["course_title"]
             tracker.set_worker(
                 worker_id, status="检查中", title=title, percent=0.0,
-                eta_s=None, total_s=None, course=job["course_title"])
+                eta_s=None, total_s=None, course=course_title)
             try:
                 if current_course != job["course_url"]:
                     driver.get(job["course_url"])
@@ -693,15 +744,16 @@ def run_worker(ctx: PluginContext, worker_id: int, jobs: queue.Queue,
                         f"{watched:.0f}/{media_duration:.0f}s: {title}")
                     continue
 
-                def report(fields: dict) -> None:
+                def report(fields: dict, course_title: str = course_title) -> None:
                     tracker.set_worker(
                         worker_id,
-                        status="播放中",
+                        status="重播中" if fields.get("replaying") else "播放中",
                         title=fields["title"],
                         percent=fields["percent"],
                         eta_s=fields["eta_s"],
                         total_s=round(fields["target_seconds"]),
-                        course=job["course_title"],
+                        course=course_title,
+                        replays=fields.get("replays", 0),
                     )
 
                 ok, watched, media_duration = play_until_complete(
@@ -794,7 +846,7 @@ def main() -> None:
 
     speedup = bounded_float(ctx.cfg("speedup", 3), 3.0, 1.0, 3.0)
     tolerance = bounded_float(ctx.cfg("completion_tolerance", 3), 3.0, 0.0, 30.0)
-    worker_count = int(bounded_float(ctx.cfg("workers", 2), 2.0, 1.0, 4.0))
+    worker_count = positive_int(ctx.cfg("workers", 2), 2)
     only_unfinished = bool(ctx.cfg("only_unfinished", True))
     headless = bool(ctx.cfg("headless", True))
 
