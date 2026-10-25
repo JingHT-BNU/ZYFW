@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -481,10 +483,9 @@ def wait_video_duration(driver, timeout: float = 20.0) -> float:
     return 0.0
 
 
-def play_until_complete(ctx: PluginContext, driver, title: str,
-                        media_duration: float, watched: float, speedup: float,
-                        tolerance: float, overall_done: int,
-                        overall_total: int) -> tuple[bool, float, float]:
+def play_until_complete(driver, title: str, media_duration: float,
+                        watched: float, speedup: float, tolerance: float,
+                        on_progress=None) -> tuple[bool, float, float]:
     deadline_wait = time.time() + 20
     while time.time() < deadline_wait:
         media_duration = float(video_state(driver).get("duration") or 0)
@@ -547,12 +548,14 @@ def play_until_complete(ctx: PluginContext, driver, title: str,
             last_report = now
             percent = min(100.0, server_watched / media_duration * 100)
             remain = max(0.0, media_duration - server_watched) / max(1.0, speedup)
-            ctx.progress(
-                done=overall_done, total=overall_total, title=title,
-                watched_seconds=round(server_watched, 1),
-                required_seconds=round(media_duration, 1),
-                percent=round(percent, 1), eta_seconds=round(remain),
-            )
+            if on_progress:
+                on_progress({
+                    "title": title,
+                    "watched_seconds": round(server_watched, 1),
+                    "target_seconds": round(media_duration, 1),
+                    "percent": round(percent, 1),
+                    "eta_s": round(remain),
+                })
 
         if state.get("ended"):
             local_ended_at = local_ended_at or now
@@ -587,64 +590,184 @@ def viewed(media_duration: float, watched: float) -> float:
     return min(max(0.0, media_duration), max(0.0, watched))
 
 
-def run_course(ctx: PluginContext, driver, course_url: str, cid: str,
-               only_unfinished: bool, speedup: float, tolerance: float,
-               course_index: int, course_total: int) -> tuple[int, int]:
-    driver.get(course_url)
-    data = course_data(driver, cid)
-    title = normalize_title(data.get("title")) or cid
-    videos = collect_task_videos(driver)
-    ctx.log(
-        f"[{course_index}/{course_total}] {title}: "
-        f"任务中共有 {len(videos)} 个必修视频")
-    ctx.progress(done=0, total=len(videos), course=title)
+class PlayTracker:
+    def __init__(self, total: int):
+        self.total = total
+        self.done = 0
+        self.lock = threading.Lock()
+        self.workers: dict[int, dict] = {}
+        self.results: dict[str, str] = {}
 
-    completed = 0
-    for index, video in enumerate(videos, start=1):
-        video_title = video["title"]
-        ctx.status(f"正在检查: {video_title}")
-        try:
-            if not click_menu_title(driver, video_title):
-                ctx.log(f"跳过(目录中未找到): {video_title}")
-                continue
-            wait_active_menu_title(driver, video_title)
-            time.sleep(0.8)
+    def set_worker(self, worker_id: int, **fields) -> None:
+        with self.lock:
+            self.workers.setdefault(worker_id, {}).update(fields)
 
-            media_duration = wait_video_duration(driver)
-            if media_duration <= 0:
-                raise RuntimeError("视频时长不可用")
-            page_label = wait_duration_label(driver)
-            watched = float(parse_duration_seconds(page_label))
-            page_complete = "已完成" in page_label
-            if only_unfinished and (
-                    page_complete or is_complete(
-                        watched, media_duration, tolerance)):
-                ctx.log(
-                    f"跳过已完成视频({watched:.0f}/{media_duration:.0f}s): "
-                    f"{video_title}")
-            else:
+    def mark(self, job_key: str, status: str) -> None:
+        with self.lock:
+            previous = self.results.get(job_key)
+            self.results[job_key] = status
+            if status == "已完成" and previous != "已完成":
+                self.done += 1
+            elif previous == "已完成" and status != "已完成":
+                self.done -= 1
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return {
+                "done": self.done,
+                "total": self.total,
+                "workers": {str(k): dict(v) for k, v in self.workers.items()},
+            }
+
+
+def discover_course_jobs(ctx: PluginContext, driver,
+                         courses: list[tuple[str, str]]) -> list[dict]:
+    jobs: list[dict] = []
+    for course_index, (course_url, cid) in enumerate(courses, start=1):
+        driver.get(course_url)
+        data = course_data(driver, cid)
+        course_title = normalize_title(data.get("title")) or cid
+        videos = collect_task_videos(driver)
+        ctx.log(
+            f"[{course_index}/{len(courses)}] {course_title}: "
+            f"任务中共有 {len(videos)} 个必修视频")
+        for index, video in enumerate(videos, start=1):
+            title = video["title"]
+            jobs.append({
+                "key": f"{cid}:{index}:{title}",
+                "title": title,
+                "course_url": course_url,
+                "cid": cid,
+                "course_title": course_title,
+            })
+    return jobs
+
+
+def run_worker(ctx: PluginContext, worker_id: int, jobs: queue.Queue,
+               cookies: list[dict], tracker: PlayTracker,
+               first_course: tuple[str, str], speedup: float,
+               tolerance: float, only_unfinished: bool,
+               initial_driver=None) -> None:
+    driver = initial_driver
+    current_course = ""
+    try:
+        if driver is None:
+            driver = make_driver(ctx, headless=bool(ctx.cfg("headless", True)))
+            inject_cookies(driver, cookies)
+            ensure_authenticated(ctx, driver, first_course[0], first_course[1])
+
+        while True:
+            try:
+                job = jobs.get_nowait()
+            except queue.Empty:
+                tracker.set_worker(
+                    worker_id, status="空闲", title="", percent=None,
+                    eta_s=None, total_s=None)
+                return
+            title = job["title"]
+            tracker.set_worker(
+                worker_id, status="检查中", title=title, percent=0.0,
+                eta_s=None, total_s=None, course=job["course_title"])
+            try:
+                if current_course != job["course_url"]:
+                    driver.get(job["course_url"])
+                    current_course = job["course_url"]
+                    time.sleep(1.0)
+                if not click_menu_title(driver, title):
+                    raise RuntimeError("课程目录中未找到该视频")
+                wait_active_menu_title(driver, title)
+                media_duration = wait_video_duration(driver)
+                if media_duration <= 0:
+                    raise RuntimeError("视频时长不可用")
+                page_label = wait_duration_label(driver)
+                watched = float(parse_duration_seconds(page_label))
+                if only_unfinished and (
+                        "已完成" in page_label
+                        or is_complete(watched, media_duration, tolerance)):
+                    tracker.mark(job["key"], "已完成")
+                    tracker.set_worker(
+                        worker_id, status="已完成", title=title,
+                        percent=100.0, eta_s=0, total_s=round(media_duration))
+                    ctx.log(
+                        f"[w{worker_id}] 跳过已完成 "
+                        f"{watched:.0f}/{media_duration:.0f}s: {title}")
+                    continue
+
+                def report(fields: dict) -> None:
+                    tracker.set_worker(
+                        worker_id,
+                        status="播放中",
+                        title=fields["title"],
+                        percent=fields["percent"],
+                        eta_s=fields["eta_s"],
+                        total_s=round(fields["target_seconds"]),
+                        course=job["course_title"],
+                    )
+
                 ok, watched, media_duration = play_until_complete(
-                    ctx, driver, video_title, media_duration, watched, speedup,
-                    tolerance, completed, len(videos))
+                    driver, title, media_duration, watched, speedup,
+                    tolerance, on_progress=report)
                 if not ok:
                     raise RuntimeError(
                         f"服务器录制进度未达到视频时长"
-                        f"({watched:.0f}/{media_duration:.0f}s): {video_title}")
+                        f"({watched:.0f}/{media_duration:.0f}s)")
+                tracker.mark(job["key"], "已完成")
+                tracker.set_worker(
+                    worker_id, status="已完成", title=title, percent=100.0,
+                    eta_s=0, total_s=round(media_duration))
+                ctx.log(
+                    f"[w{worker_id}] 完成 "
+                    f"{watched:.0f}/{media_duration:.0f}s: {title}")
+            except Exception as e:
+                tracker.mark(job["key"], "出错")
+                tracker.set_worker(
+                    worker_id, status="出错", title=title, percent=None,
+                    eta_s=None, total_s=None)
+                ctx.log(f"[w{worker_id}] 视频失败: {title}: {e!r}")
+            finally:
+                jobs.task_done()
+    except Exception as e:
+        tracker.set_worker(worker_id, status="崩溃", title="")
+        ctx.log(f"[w{worker_id}] 工作进程崩溃: {e!r}")
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+        tracker.set_worker(worker_id, status="已关闭")
 
-            completed += 1
-            ctx.status(
-                f"完成 {index}/{len(videos)}: {video_title}",
-                watched_seconds=round(watched, 1),
-            )
-            ctx.progress(
-                done=completed, total=len(videos), title=video_title,
-                watched_seconds=round(watched, 1),
-                required_seconds=round(media_duration, 1),
-            )
-        except Exception as e:
-            ctx.log(f"视频处理失败: {video_title}: {e!r}")
-            ctx.progress(done=completed, total=len(videos), title=video_title)
-    return completed, len(videos)
+
+def run_parallel(ctx: PluginContext, jobs: list[dict], cookies: list[dict],
+                 initial_driver, speedup: float, tolerance: float,
+                 only_unfinished: bool, worker_count: int) -> PlayTracker:
+    tracker = PlayTracker(len(jobs))
+    work: queue.Queue = queue.Queue()
+    for job in jobs:
+        work.put(job)
+    first_course = (jobs[0]["course_url"], jobs[0]["cid"])
+    threads = []
+    for worker_id in range(min(worker_count, len(jobs))):
+        thread = threading.Thread(
+            target=run_worker,
+            args=(
+                ctx, worker_id, work, cookies, tracker, first_course,
+                speedup, tolerance, only_unfinished,
+                initial_driver if worker_id == 0 else None,
+            ),
+            daemon=True,
+            name=f"bdata-worker-{worker_id}",
+        )
+        thread.start()
+        threads.append(thread)
+        time.sleep(0.3)
+
+    ctx.progress(**tracker.snapshot())
+    while any(thread.is_alive() for thread in threads):
+        ctx.progress(**tracker.snapshot())
+        time.sleep(1.0)
+    ctx.progress(**tracker.snapshot())
+    return tracker
 
 
 def main() -> None:
@@ -669,8 +792,9 @@ def main() -> None:
         ctx.log("未配置统一认证账号(需在全局设置或插件配置中填写),退出")
         return
 
-    speedup = bounded_float(ctx.cfg("speedup", 4), 4.0, 1.0, 4.0)
+    speedup = bounded_float(ctx.cfg("speedup", 3), 3.0, 1.0, 3.0)
     tolerance = bounded_float(ctx.cfg("completion_tolerance", 3), 3.0, 0.0, 30.0)
+    worker_count = int(bounded_float(ctx.cfg("workers", 2), 2.0, 1.0, 4.0))
     only_unfinished = bool(ctx.cfg("only_unfinished", True))
     headless = bool(ctx.cfg("headless", True))
 
@@ -679,20 +803,23 @@ def main() -> None:
     try:
         first_url, first_cid = courses[0]
         ensure_authenticated(ctx, driver, first_url, first_cid)
-        total_completed = 0
-        total_videos = 0
-        for index, (url, cid) in enumerate(courses, start=1):
-            try:
-                completed, total = run_course(
-                    ctx, driver, url, cid, only_unfinished, speedup,
-                    tolerance, index, len(courses))
-                total_completed += completed
-                total_videos += total
-            except Exception as e:
-                ctx.log(f"课程处理失败({cid}): {e!r}")
-        ctx.progress(done=total_completed, total=total_videos)
+        jobs = discover_course_jobs(ctx, driver, courses)
+        if not jobs:
+            ctx.progress(done=0, total=0)
+            ctx.status("任务中没有需要播放的必修视频", done=True)
+            return
+        cookies = driver.get_cookies()
+        workers = min(worker_count, len(jobs))
+        ctx.log(f"开始并发刷课: {workers} 个浏览器进程, {len(jobs)} 个视频")
+        tracker = run_parallel(
+            ctx, jobs, cookies, driver, speedup, tolerance,
+            only_unfinished, workers)
+        snapshot = tracker.snapshot()
+        completed = sum(
+            1 for status in tracker.results.values() if status == "已完成")
         ctx.status(
-            f"师道云刷课处理结束: {total_completed}/{total_videos} 个视频",
+            f"师道云刷课处理结束: "
+            f"{completed}/{snapshot['total']} 个视频",
             done=True)
     finally:
         try:

@@ -379,6 +379,7 @@
         return Object.entries(info.workers).map(([id, w]) => ({
           id,
           status: w.status || "-",
+          course: w.course || "",
           title: w.title || w.url || "",
           percent: typeof w.percent === "number" ? w.percent : null,
           etaS: (w.eta_s === null || w.eta_s === undefined) ? null : w.eta_s,
@@ -805,9 +806,11 @@
         <div class="worker-panels" v-if="workerList(detailPlugin.id).length">
           <div class="worker-panel" v-for="w in workerList(detailPlugin.id)" :key="w.id">
             <div class="wp-head">
-              <el-tag size="small" :type="workerTagType(w.status)">线程 #{{ w.id }}</el-tag>
+              <el-tag size="small" :type="workerTagType(w.status)">进程 #{{ w.id }}</el-tag>
               <span class="wp-status">{{ w.status }}</span>
-              <span class="wp-title" :title="w.title">{{ w.title || "—" }}</span>
+              <span class="wp-title" :title="(w.course ? w.course + ' · ' : '') + w.title">
+                {{ w.course ? w.course + " · " : "" }}{{ w.title || "—" }}
+              </span>
             </div>
             <template v-if="w.percent !== null">
               <el-progress
