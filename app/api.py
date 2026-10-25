@@ -102,7 +102,8 @@ def _effective_plugin_config(plugin: dict, cfg: dict) -> dict:
     global_general = g.get("general")
     if not isinstance(global_general, dict):
         global_general = {}
-    general.setdefault("driver_path", global_general.get("driver_path", ""))
+    for key, value in global_general.items():
+        general.setdefault(key, value)
     return effective
 
 

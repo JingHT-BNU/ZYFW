@@ -657,9 +657,26 @@
       </div>
       <div class="panel">
         <h2><el-icon><tools /></el-icon> 通用参数</h2>
-        <el-form label-width="140px" style="max-width:560px">
+        <el-form label-width="160px" style="max-width:620px">
+          <el-form-item label="插件运行浏览器">
+            <el-select v-model="state.globalConfig.general.browser" style="width:100%">
+              <el-option label="Microsoft Edge" value="edge" />
+              <el-option label="Mozilla Firefox" value="firefox" />
+              <el-option label="Chromium / Chrome for Testing" value="chromium" />
+            </el-select>
+            <div class="form-hint">所有插件统一使用该浏览器运行</div>
+          </el-form-item>
           <el-form-item label="EdgeDriver 路径">
-            <el-input v-model="state.globalConfig.general.driver_path" placeholder="留空 = 自动匹配 (Selenium Manager)" />
+            <el-input v-model="state.globalConfig.general.driver_path" placeholder="留空 = 自动检测 msedgedriver.exe 或由 Selenium Manager 匹配" />
+          </el-form-item>
+          <el-form-item label="GeckoDriver 路径">
+            <el-input v-model="state.globalConfig.general.geckodriver_path" placeholder="留空 = 自动检测 geckodriver.exe 或由 Selenium Manager 匹配" />
+          </el-form-item>
+          <el-form-item label="ChromeDriver 路径">
+            <el-input v-model="state.globalConfig.general.chromedriver_path" placeholder="留空 = 自动检测 chromedriver.exe 或由 Selenium Manager 匹配" />
+          </el-form-item>
+          <el-form-item label="Chromium 路径">
+            <el-input v-model="state.globalConfig.general.chromium_path" placeholder="留空 = 自动检测 chrome-win64\\chrome.exe" />
           </el-form-item>
           <el-form-item label="默认无头模式">
             <el-switch v-model="state.globalConfig.general.headless_default" />

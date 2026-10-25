@@ -190,9 +190,9 @@ ctx.progress(done=3, total=10, title="当前任务")
 
 最近一次进度会通过插件列表 API 暴露给前端；进程结束后自动清除。日志中不得输出密码、Cookie、令牌或其他敏感值。
 
-## 6. Selenium 与 Edge
+## 6. Selenium 与浏览器
 
-公共 SDK 提供 Edge 初始化工具：
+公共 SDK 提供统一的浏览器初始化工具：
 
 ```python
 from _sdk.sdk import make_driver
@@ -207,10 +207,14 @@ finally:
 
 `make_driver` 的浏览器行为：
 
-- 默认使用本机 Microsoft Edge。
+- 根据全局设置 `general.browser` 选择 `edge`、`firefox` 或 `chromium`。
 - 开启自动播放许可，并减少后台标签页节流。
-- 全局设置配置了 EdgeDriver 路径时使用指定驱动。
-- 未配置路径时交给 Selenium Manager 自动匹配。
+- Edge 使用 `general.driver_path`；Firefox 使用 `general.geckodriver_path`；Chromium 使用 `general.chromedriver_path`。
+- Chromium 浏览器可执行文件通过 `general.chromium_path` 指定。
+- 路径留空时依次检测项目根目录的本地文件和 Selenium Manager。
+- Chromium 模式要求存在有效的 Chromium 可执行文件。
+
+驱动安装方式和默认目录参见项目 README。插件代码不需要按浏览器分支，统一调用 `make_driver` 即可。
 
 ### 元素等待
 

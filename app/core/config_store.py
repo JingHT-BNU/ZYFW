@@ -206,7 +206,11 @@ def _deep_update(base: dict, patch: dict) -> None:
 GLOBAL_DEFAULTS: dict = {
     "account": {"username": "", "password": ""},
     "general": {
+        "browser": "edge",
         "driver_path": "",
+        "geckodriver_path": "",
+        "chromedriver_path": "",
+        "chromium_path": "",
         "headless_default": True,
         "spoc_workers": 8,
         "default_speedup": 3.0,

@@ -16,9 +16,9 @@ ZYFW 是一款面向北师大校园学习场景的 Windows 桌面工具箱。应
 
 - Windows 10 或 Windows 11
 - Python 3.10 或更高版本
-- Microsoft Edge
-- 与 Edge 版本匹配的 Microsoft Edge WebDriver
-- 由于中国大陆用户难以下载Google Chrome WebDriver, 故推荐使用 Edge
+- Microsoft Edge、Mozilla Firefox 或 Chromium 中的至少一种
+- 与所选浏览器版本匹配的 WebDriver
+- 由于中国大陆用户难以下载 Google Chrome WebDriver，故推荐使用 Edge
 
 ## 快速开始
 
@@ -37,20 +37,38 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-### 3. 安装 Microsoft Edge WebDriver
+### 3. 安装 WebDriver
+
+插件运行浏览器可在全局设置中切换。应用主窗口仍使用 Microsoft Edge。
+
+选择一种浏览器并安装对应驱动：
+
+#### Microsoft Edge
 
 1. 在 Edge 地址栏打开 `edge://settings/help`，记录浏览器版本号。
 2. 访问 [Microsoft Edge WebDriver 官方下载页](https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver/)。
-3. 下载与 Edge 版本、系统架构（通常为 x64）一致的 WebDriver。如果对应版本没找到，可直接更新edge到最新版本然后下载
-4. 解压压缩包，将 `msedgedriver.exe` 放到固定目录，例如：
+3. 下载与 Edge 版本和系统架构（通常为 x64）一致的 WebDriver。如果对应版本未提供，可先更新 Edge，再重新下载。
+4. 将 `msedgedriver.exe` 放到项目根目录，或放到任意固定目录。
 
-   ```text
-   C:\Tools\EdgeDriver\msedgedriver.exe
-   ```
+#### Mozilla Firefox
 
-5. 启动 ZYFW 后，在“全局设置 → EdgeDriver 路径”中填写该文件的完整路径。
+1. 访问 [GeckoDriver 官方发布页](https://github.com/mozilla/geckodriver/releases)。
+2. 下载适用于 Windows x64 的 GeckoDriver。
+3. 解压后将 `geckodriver.exe` 放到项目根目录，或放到任意固定目录。
 
-Edge 自动更新后，应重新下载对应版本的 WebDriver，避免出现浏览器启动失败。
+#### Chromium / Chrome for Testing
+
+1. 访问 [Chrome for Testing 官方下载页](https://googlechromelabs.github.io/chrome-for-testing/)。
+2. 选择与所需版本一致的 Win64 构建。
+3. 下载 `chrome-win64.zip` 和 `chromedriver-win64.zip`。
+4. 将 Chromium 解压到项目根目录的 `chrome-win64` 文件夹。
+5. 将 ChromeDriver 解压为项目根目录的 `chromedriver.exe`。
+
+项目根目录中的 `msedgedriver.exe`、`geckodriver.exe`、`chromedriver.exe` 和 `chrome-win64/` 均不会进入版本控制。
+
+启动 ZYFW 后，在“全局设置 → 插件运行浏览器”中选择 Edge、Firefox 或 Chromium。驱动和浏览器位于项目默认位置时可留空路径；使用其他位置时，填写对应的完整路径。
+
+浏览器自动更新后，应同步更新对应 WebDriver。
 
 ### 4. 启动工具箱
 
@@ -73,9 +91,10 @@ Edge 自动更新后，应重新下载对应版本的 WebDriver，避免出现�
 ### 5. 完成初始配置
 
 1. 打开“全局设置”，填写北师大统一身份认证账号和密码。
-2. 打开目标插件的“配置 / 日志”页面，填写课程链接、运行参数和插件专用账号。
-3. 保存配置，返回仪表盘并点击“启动”。
-4. 在插件详情页查看运行状态、实时日志、进度条和完成结果。
+2. 在“插件运行浏览器”中选择 Edge、Firefox 或 Chromium，并确认对应驱动路径。
+3. 打开目标插件的“配置 / 日志”页面，填写课程链接、运行参数和插件专用账号。
+4. 保存配置，返回仪表盘并点击“启动”。
+5. 在插件详情页查看运行状态、实时日志、进度条和完成结果。
 
 密码使用 Windows DPAPI 加密存储，界面和 API 中只显示 `******`。插件账号留空时自动使用全局账号。
 
@@ -111,7 +130,7 @@ Edge 自动更新后，应重新下载对应版本的 WebDriver，避免出现�
 
 **浏览器无法启动**
 
-确认 `msedgedriver.exe` 与当前 Edge 版本一致，并检查全局设置中的驱动路径。
+确认全局设置中选择的浏览器与 WebDriver 版本一致，并检查对应驱动和 Chromium 可执行文件路径。
 
 **页面内容没有更新**
 

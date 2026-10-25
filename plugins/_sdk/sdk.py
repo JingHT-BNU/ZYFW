@@ -17,13 +17,28 @@ from typing import Any
 
 from selenium import webdriver
 from selenium.common import TimeoutException
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
-from selenium.webdriver.edge.options import Options
-from selenium.webdriver.edge.service import Service
+from selenium.webdriver.edge.options import Options as EdgeOptions
+from selenium.webdriver.edge.service import Service as EdgeService
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
+from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 ROOT = Path(__file__).resolve().parents[2]
+BROWSER_EDGE = "edge"
+BROWSER_FIREFOX = "firefox"
+BROWSER_CHROMIUM = "chromium"
+SUPPORTED_BROWSERS = {BROWSER_EDGE, BROWSER_FIREFOX, BROWSER_CHROMIUM}
+_BROWSER_ALIASES = {"chrome": BROWSER_CHROMIUM, "microsoft-edge": BROWSER_EDGE}
+_LOCAL_DRIVERS = {
+    BROWSER_EDGE: ROOT / "msedgedriver.exe",
+    BROWSER_FIREFOX: ROOT / "geckodriver.exe",
+    BROWSER_CHROMIUM: ROOT / "chromedriver.exe",
+}
+_LOCAL_CHROMIUM = ROOT / "chrome-win64" / "chrome.exe"
 
 
 # ---------------- 参数与配置 ----------------
@@ -52,6 +67,10 @@ class PluginContext:
         return self.config.get(key, default)
 
     @property
+    def browser(self) -> str:
+        return browser_name(self)
+
+    @property
     def username(self) -> str:
         return self.config.get("username", "")
 
@@ -60,13 +79,8 @@ class PluginContext:
         return self.config.get("password", "")
 
     def driver_path(self) -> str:
-        """返回配置的 driver 路径;未配置时走 Selenium Manager 自动匹配。
-
-        根目录的 msedgedriver.exe 是历史遗留(版本可能落后于本机 Edge),
-        只有用户在全局设置里显式指定路径时才使用。
-        """
-        p = (self.config.get("general") or {}).get("driver_path") or ""
-        return p if p and Path(p).exists() else ""
+        """返回当前浏览器使用的驱动路径;留空时使用本地目录或 Selenium Manager。"""
+        return driver_path(self)
 
     # -- 事件输出 --
 
@@ -87,8 +101,52 @@ class PluginContext:
 
 # ---------------- Selenium 工具 ----------------
 
-def make_edge_options(headless: bool = True) -> Options:
-    opt = Options()
+def _general_config(ctx: PluginContext) -> dict:
+    general = ctx.cfg("general", {})
+    return general if isinstance(general, dict) else {}
+
+
+def browser_name(ctx: PluginContext) -> str:
+    raw = str(_general_config(ctx).get("browser") or BROWSER_EDGE).strip().lower()
+    name = _BROWSER_ALIASES.get(raw, raw)
+    if name not in SUPPORTED_BROWSERS:
+        raise ValueError(f"不支持的浏览器: {raw}")
+    return name
+
+
+def _resolve_existing_path(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    return str(path.resolve()) if path.is_file() else ""
+
+
+def driver_path(ctx: PluginContext) -> str:
+    general = _general_config(ctx)
+    browser = browser_name(ctx)
+    keys = {
+        BROWSER_EDGE: "driver_path",
+        BROWSER_FIREFOX: "geckodriver_path",
+        BROWSER_CHROMIUM: "chromedriver_path",
+    }
+    configured = _resolve_existing_path(general.get(keys[browser]))
+    if configured:
+        return configured
+    local = _LOCAL_DRIVERS[browser]
+    return str(local) if local.is_file() else ""
+
+
+def chromium_executable(ctx: PluginContext) -> str:
+    configured = _resolve_existing_path(_general_config(ctx).get("chromium_path"))
+    if configured:
+        return configured
+    return str(_LOCAL_CHROMIUM) if _LOCAL_CHROMIUM.is_file() else ""
+
+
+def _add_chromium_options(opt, headless: bool) -> None:
     opt.add_experimental_option("excludeSwitches", ["enable-automation"])
     opt.add_argument("--disable-blink-features=AutomationControlled")
     opt.add_argument("--ignore-ssl-errors")
@@ -103,15 +161,61 @@ def make_edge_options(headless: bool = True) -> Options:
         # 无头下没有真实窗口,必须显式给 16:9 视口,
         # 否则部分站点(SPOC 首页登录按钮等)按视口宽度做响应式隐藏
         opt.add_argument("--window-size=1920,1080")
+
+
+def make_edge_options(headless: bool = True) -> EdgeOptions:
+    opt = EdgeOptions()
+    _add_chromium_options(opt, headless)
+    return opt
+
+
+def make_chromium_options(
+        headless: bool = True, executable_path: str = "") -> ChromeOptions:
+    opt = ChromeOptions()
+    _add_chromium_options(opt, headless)
+    if executable_path:
+        opt.binary_location = executable_path
+    return opt
+
+
+def make_firefox_options(headless: bool = True) -> FirefoxOptions:
+    opt = FirefoxOptions()
+    opt.accept_insecure_certs = True
+    opt.set_preference("media.autoplay.default", 0)
+    opt.set_preference("media.autoplay.blocking_policy", 0)
+    opt.set_preference("media.autoplay.block-webaudio", False)
+    opt.set_preference("dom.disable_beforeunload", True)
+    if headless:
+        opt.add_argument("-headless")
+        opt.add_argument("--width=1920")
+        opt.add_argument("--height=1080")
     return opt
 
 
 def make_driver(ctx: PluginContext, headless: bool | None = None):
     if headless is None:
         headless = bool(ctx.cfg("headless", True))
-    driver_path = ctx.driver_path()
-    service = Service(driver_path) if driver_path else Service()
-    return webdriver.Edge(service=service, options=make_edge_options(headless))
+    browser = browser_name(ctx)
+    path = driver_path(ctx)
+
+    if browser == BROWSER_EDGE:
+        service = EdgeService(path) if path else EdgeService()
+        return webdriver.Edge(service=service, options=make_edge_options(headless))
+    if browser == BROWSER_FIREFOX:
+        service = FirefoxService(path) if path else FirefoxService()
+        return webdriver.Firefox(
+            service=service, options=make_firefox_options(headless))
+
+    executable = chromium_executable(ctx)
+    if not executable:
+        raise RuntimeError(
+            "未找到 Chromium 可执行文件; 请配置 chromium_path "
+            "或将 chromium_path 指向 chrome-win64/chrome.exe")
+    service = ChromeService(path) if path else ChromeService()
+    return webdriver.Chrome(
+        service=service,
+        options=make_chromium_options(headless, executable),
+    )
 
 
 def find(driver, element: str, timeout: float = 10, by=By.XPATH):
