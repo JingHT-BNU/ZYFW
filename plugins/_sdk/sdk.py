@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import time
 from pathlib import Path
@@ -33,12 +34,20 @@ BROWSER_FIREFOX = "firefox"
 BROWSER_CHROMIUM = "chromium"
 SUPPORTED_BROWSERS = {BROWSER_EDGE, BROWSER_FIREFOX, BROWSER_CHROMIUM}
 _BROWSER_ALIASES = {"chrome": BROWSER_CHROMIUM, "microsoft-edge": BROWSER_EDGE}
+_DRIVER_SUFFIX = ".exe" if os.name == "nt" else ""
 _LOCAL_DRIVERS = {
-    BROWSER_EDGE: ROOT / "msedgedriver.exe",
-    BROWSER_FIREFOX: ROOT / "geckodriver.exe",
-    BROWSER_CHROMIUM: ROOT / "chromedriver.exe",
+    BROWSER_EDGE: ROOT / f"msedgedriver{_DRIVER_SUFFIX}",
+    BROWSER_FIREFOX: ROOT / f"geckodriver{_DRIVER_SUFFIX}",
+    BROWSER_CHROMIUM: ROOT / f"chromedriver{_DRIVER_SUFFIX}",
 }
-_LOCAL_CHROMIUM = ROOT / "chrome-win64" / "chrome.exe"
+_LOCAL_CHROMIUM_CANDIDATES = (
+    ROOT / "chrome-win64" / "chrome.exe",
+    ROOT / "chrome-linux64" / "chrome",
+    ROOT / "chrome-mac-x64" / "Google Chrome for Testing.app"
+    / "Contents" / "MacOS" / "Google Chrome for Testing",
+    ROOT / "chrome-mac-arm64" / "Google Chrome for Testing.app"
+    / "Contents" / "MacOS" / "Google Chrome for Testing",
+)
 
 
 # ---------------- 参数与配置 ----------------
@@ -143,7 +152,10 @@ def chromium_executable(ctx: PluginContext) -> str:
     configured = _resolve_existing_path(_general_config(ctx).get("chromium_path"))
     if configured:
         return configured
-    return str(_LOCAL_CHROMIUM) if _LOCAL_CHROMIUM.is_file() else ""
+    for candidate in _LOCAL_CHROMIUM_CANDIDATES:
+        if candidate.is_file():
+            return str(candidate)
+    return ""
 
 
 def _add_chromium_options(opt, headless: bool) -> None:

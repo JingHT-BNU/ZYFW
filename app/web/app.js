@@ -642,7 +642,7 @@
     <template v-if="state.page==='settings' && state.globalConfig">
       <div class="page-header">
         <h1>全局设置</h1>
-        <p>北师大统一身份认证账号(教务系统 / SPOC 通用);凭据用 Windows DPAPI 加密存储,某平台密码不同可在对应插件配置中单独覆盖</p>
+        <p>北师大统一身份认证账号(教务系统 / SPOC 通用);凭据使用 Fernet 加密存储,某平台密码不同可在对应插件配置中单独覆盖</p>
       </div>
       <div class="panel">
         <h2><el-icon><user /></el-icon> 统一身份认证账号</h2>

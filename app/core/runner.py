@@ -93,12 +93,15 @@ class PluginProcess:
         self.last_progress: dict | None = None
 
     def stop(self, timeout: float = 8.0) -> bool:
-        """先 CTRL_BREAK 温和通知,超时后杀整棵进程树。返回是否仍在运行。"""
+        """先发送温和停止信号,超时后结束整棵进程树。返回是否仍在运行。"""
         if self.proc.poll() is not None:
             return False
         self.status = STATUS_STOPPING
         try:
-            self.proc.send_signal(signal.CTRL_BREAK_EVENT)
+            if os.name == "nt":
+                self.proc.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass
         try:
@@ -109,10 +112,13 @@ class PluginProcess:
 
     def _kill_tree(self) -> None:
         try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
-                capture_output=True, timeout=10,
-            )
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
+                    capture_output=True, timeout=10, check=False,
+                )
+            else:
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
         except Exception:
             try:
                 self.proc.kill()
@@ -187,6 +193,7 @@ class Runner:
             creationflags = 0
             if os.name == "nt":
                 creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+            popen_extra = {} if os.name == "nt" else {"start_new_session": True}
 
             try:
                 proc = subprocess.Popen(
@@ -204,6 +211,7 @@ class Runner:
                     errors="replace",
                     env=env,
                     creationflags=creationflags,
+                    **popen_extra,
                 )
             except Exception:
                 _safe_unlink(config_path)

@@ -19,7 +19,7 @@ ZYFW 是一款面向北师大校园学习场景的本地 Web 工具箱。应用�
 - 使用浏览器自动化插件时，需要与所选插件浏览器版本匹配的 WebDriver
 - 推荐使用 Edge，但 Edge 不是运行主窗口的必要条件
 
-ZYFW 的界面不绑定特定浏览器。当前发行版的一键启动脚本和凭据加密实现主要面向 Windows；在其他桌面系统上运行前，需要确认对应平台的启动方式和安全存储能力已经适配。
+ZYFW 的界面不绑定特定浏览器，支持在 Windows、macOS 和常见 Linux 桌面环境中运行。不同平台需要安装对应的 Python、浏览器和 WebDriver。
 
 ## 快速开始
 
@@ -33,16 +33,18 @@ cd ZYFW
 ### 2. 创建环境并安装依赖
 
 ```console
-python -m venv .venv
-
 # Windows
+py -3 -m venv .venv
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 
 # macOS / Linux
+python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
 ```
+
+Ubuntu 如果缺少 `venv` 模块，可先安装 `python3-venv`。
 
 ### 3. 安装 WebDriver
 
@@ -79,21 +81,30 @@ python -m venv .venv
 
 ### 4. 启动工具箱
 
-在 Windows 上可双击项目根目录中的 `start.bat`。程序会自动选择可用端口，优先打开独立的 Edge 应用窗口；未安装 Edge 时，回退到系统默认浏览器。
+Windows 可双击项目根目录中的 `start.bat`。程序会自动选择可用端口，优先打开独立的 Edge 应用窗口；未安装 Edge 时，回退到系统默认浏览器。
+
+macOS 或 Linux 使用 `start.sh`：
+
+```console
+chmod +x start.sh
+./start.sh
+```
 
 也可以使用命令行启动：
+
+Windows 命令行：
 
 ```console
 .venv\Scripts\python.exe app\main.py --port 8765
 ```
 
-仅启动服务、不自动打开窗口：
+macOS / Linux 命令行：
 
 ```console
-.venv\Scripts\python.exe app\main.py --no-window
+.venv/bin/python app/main.py --port 8765
 ```
 
-非 Windows 环境需要使用该平台对应的 Python 路径。在正式启动前，应确认本机服务、浏览器驱动和凭据存储均已满足运行条件。
+仅启动服务、不自动打开窗口时，在命令末尾增加 `--no-window`。
 
 服务实际地址写入 `data/zyfw-gui.url`，运行日志写入 `data/logs/zyfw-gui.log`。
 
@@ -105,7 +116,9 @@ python -m venv .venv
 4. 保存配置，返回仪表盘并点击“启动”。
 5. 在插件详情页查看运行状态、实时日志、进度条和完成结果。
 
-在当前 Windows 发行版中，密码使用 DPAPI 加密存储，界面和 API 中只显示 `******`。其他平台部署应采用等效的安全凭据存储。插件账号留空时自动使用全局账号。
+所有平台统一使用 Fernet 加密凭据。密钥保存在 `data/.credentials.key`，并设置为仅当前用户可读写。界面和 API 中只显示 `******`。插件账号留空时自动使用全局账号。`data/` 和凭据密钥均不得分享或提交。
+
+从旧版加密配置升级时，无法转换的密码字段会清空，需要在全局设置中重新输入一次。
 
 ## 插件配置说明
 
@@ -143,7 +156,7 @@ python -m venv .venv
 
 **页面内容没有更新**
 
-完全退出 ZYFW 后重新启动服务。Windows 用户可重新运行 `start.bat`；主程序修改需要重启服务才能生效。
+完全退出 ZYFW 后重新启动服务。Windows 使用 `start.bat`，macOS/Linux 使用 `start.sh`；主程序修改需要重启服务才能生效。
 
 **端口被占用**
 

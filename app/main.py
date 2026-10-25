@@ -85,17 +85,20 @@ def open_window_later(url: str) -> None:
     if not wait_http(url):
         print(f"服务未能在预期时间内就绪: {url}", flush=True)
         return
-    for exe in (
-        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
-        os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
-    ):
-        if os.path.exists(exe):
-            try:
-                subprocess.Popen([exe, "--app=" + url],
-                                 creationflags=subprocess.DETACHED_PROCESS)
-                return
-            except OSError:
-                continue
+    if os.name == "nt":
+        for exe in (
+            os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+            os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+        ):
+            if os.path.exists(exe):
+                try:
+                    subprocess.Popen(
+                        [exe, "--app=" + url],
+                        creationflags=subprocess.DETACHED_PROCESS,
+                    )
+                    return
+                except OSError:
+                    continue
     webbrowser.open(url)
 
 
@@ -109,7 +112,7 @@ def main() -> None:
     port = args.port or find_free_port()
     app = create_app()
 
-    # 供 start.bat 等启动器读取实际端口
+    # 供 start.bat / start.sh 等启动器读取实际端口
     url_file = ROOT / "data" / "zyfw-gui.url"
     url_file.parent.mkdir(parents=True, exist_ok=True)
     url_file.write_text(f"http://127.0.0.1:{port}/", encoding="utf-8")

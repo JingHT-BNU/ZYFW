@@ -1,13 +1,12 @@
-"""全局与插件配置的持久化存储,凭据字段使用 Windows DPAPI 加密。"""
+"""全局与插件配置的持久化存储与跨平台凭据加密。"""
 from __future__ import annotations
 
-import base64
-import ctypes
-from ctypes import wintypes
 import json
 import os
+import subprocess
 import tempfile
 import threading
+from getpass import getuser
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +14,12 @@ _ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = _ROOT / "data"
 
 _SECRET_KEYS = {"password", "secret", "token"}
-_DPAPI_PREFIX = "dpapi:"
-_CRYPTPROTECT_UI_FORBIDDEN = 0x1
+_FERNET_PREFIX = "fernet:"
+_FERNET_KEY_NAME = ".credentials.key"
+_RETIRED_SECRET_PREFIX = "dpapi:"
 _PATH_LOCKS: dict[Path, threading.RLock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
+_FERNET_KEY_LOCK = threading.Lock()
 
 
 def _path_lock(path: Path) -> threading.RLock:
@@ -28,71 +29,90 @@ def _path_lock(path: Path) -> threading.RLock:
         return _PATH_LOCKS.setdefault(key, threading.RLock())
 
 
-class _DATA_BLOB(ctypes.Structure):
-    _fields_ = [
-        ("cbData", wintypes.DWORD),
-        ("pbData", ctypes.POINTER(ctypes.c_char)),
-    ]
+def _fernet_key_path() -> Path:
+    return DATA_DIR / _FERNET_KEY_NAME
 
 
-_crypt32 = ctypes.windll.crypt32
-_kernel32 = ctypes.windll.kernel32
-
-_crypt32.CryptProtectData.argtypes = [
-    ctypes.POINTER(_DATA_BLOB), wintypes.LPCWSTR, ctypes.POINTER(_DATA_BLOB),
-    ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(_DATA_BLOB),
-]
-_crypt32.CryptProtectData.restype = wintypes.BOOL
-_crypt32.CryptUnprotectData.argtypes = [
-    ctypes.POINTER(_DATA_BLOB), ctypes.POINTER(wintypes.LPCWSTR),
-    ctypes.POINTER(_DATA_BLOB), ctypes.c_void_p, ctypes.c_void_p,
-    wintypes.DWORD, ctypes.POINTER(_DATA_BLOB),
-]
-_crypt32.CryptUnprotectData.restype = wintypes.BOOL
-
-
-def _make_blob(data: bytes) -> _DATA_BLOB:
-    buf = ctypes.create_string_buffer(data, len(data))
-    return _DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+def _secure_key_file(path: Path) -> None:
+    if os.name == "nt":
+        user = os.environ.get("USERNAME") or getuser()
+        subprocess.run(
+            [
+                "icacls", str(path), "/inheritance:r",
+                "/grant:r", f"{user}:(R,W)",
+            ],
+            capture_output=True,
+            check=True,
+            timeout=10,
+        )
+    else:
+        os.chmod(path, 0o600)
 
 
-def dpapi_protect(plaintext: str) -> str:
-    in_blob = _make_blob(plaintext.encode("utf-8"))
-    out_blob = _DATA_BLOB()
-    if not _crypt32.CryptProtectData(
-        ctypes.byref(in_blob), None, None, None, None,
-        _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(out_blob),
-    ):
-        raise OSError("CryptProtectData failed")
-    try:
-        raw = ctypes.string_at(out_blob.pbData, out_blob.cbData)
-    finally:
-        _kernel32.LocalFree(out_blob.pbData)
-    return _DPAPI_PREFIX + base64.b64encode(raw).decode("ascii")
+def _load_fernet_key() -> bytes:
+    path = _fernet_key_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _FERNET_KEY_LOCK:
+        if path.exists():
+            key = path.read_bytes().strip()
+            _secure_key_file(path)
+            if not key:
+                raise OSError("凭据密钥文件为空")
+            return key
+
+        from cryptography.fernet import Fernet
+
+        key = Fernet.generate_key()
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            key = path.read_bytes().strip()
+            _secure_key_file(path)
+            if not key:
+                raise OSError("凭据密钥文件为空")
+            return key
+        with os.fdopen(fd, "wb") as f:
+            f.write(key)
+            f.flush()
+            os.fsync(f.fileno())
+        _secure_key_file(path)
+        return key
 
 
-def dpapi_unprotect(token: str) -> str:
-    if not token.startswith(_DPAPI_PREFIX):
+def fernet_protect(plaintext: str) -> str:
+    from cryptography.fernet import Fernet
+
+    token = Fernet(_load_fernet_key()).encrypt(plaintext.encode("utf-8"))
+    return _FERNET_PREFIX + token.decode("ascii")
+
+
+def fernet_unprotect(token: str) -> str:
+    if not token.startswith(_FERNET_PREFIX):
         return token
-    raw = base64.b64decode(token[len(_DPAPI_PREFIX):])
-    in_blob = _make_blob(raw)
-    out_blob = _DATA_BLOB()
-    if not _crypt32.CryptUnprotectData(
-        ctypes.byref(in_blob), None, None, None, None,
-        _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(out_blob),
-    ):
-        raise OSError("CryptUnprotectData failed")
+    from cryptography.fernet import Fernet, InvalidToken
+
+    raw = token[len(_FERNET_PREFIX):].encode("ascii")
     try:
-        out = ctypes.string_at(out_blob.pbData, out_blob.cbData)
-    finally:
-        _kernel32.LocalFree(out_blob.pbData)
-    return out.decode("utf-8")
+        return Fernet(_load_fernet_key()).decrypt(raw).decode("utf-8")
+    except InvalidToken as e:
+        raise ValueError("凭据密钥与密文不匹配") from e
+
+
+def protect_secret(plaintext: str) -> str:
+    return fernet_protect(plaintext)
+
+
+def decrypt_secret(token: str) -> str:
+    if token.startswith(_FERNET_PREFIX):
+        return fernet_unprotect(token)
+    return token
 
 
 def _encrypt_secrets(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {
-            k: (dpapi_protect(v) if k in _SECRET_KEYS and isinstance(v, str) and v and not v.startswith(_DPAPI_PREFIX)
+            k: (protect_secret(v) if k in _SECRET_KEYS and isinstance(v, str)
+                and v and not v.startswith(_FERNET_PREFIX)
                 else _encrypt_secrets(v))
             for k, v in obj.items()
         }
@@ -105,12 +125,16 @@ def _decrypt_secrets(obj: Any) -> Any:
     if isinstance(obj, dict):
         out = {}
         for k, v in obj.items():
-            if k in _SECRET_KEYS and isinstance(v, str) and v.startswith(_DPAPI_PREFIX):
-                # 密文由旧 Windows 环境(用户配置重建/系统密码重置等)加密时当前
-                # 用户永远解不开;此时清空该字段比让整个配置接口 500 更合理,
-                # 用户在设置页重新输入即可。保存时空值不会触发再加密。
+            if k in _SECRET_KEYS and isinstance(v, str):
+                if v.startswith(_RETIRED_SECRET_PREFIX):
+                    out[k] = ""
+                    continue
+                if not v.startswith(_FERNET_PREFIX):
+                    out[k] = v
+                    continue
+                # 无法解密时清空单个字段, 保留其他配置并允许用户重新输入。
                 try:
-                    out[k] = dpapi_unprotect(v)
+                    out[k] = decrypt_secret(v)
                 except (OSError, ValueError, UnicodeDecodeError):
                     out[k] = ""
             else:
@@ -231,8 +255,6 @@ def _migrate_legacy_accounts(data: dict) -> dict:
         "username": zyfw.get("username") or spoc.get("username") or "",
         "password": zyfw.get("password") or spoc.get("password") or "",
     }
-    if isinstance(merged["password"], str) and merged["password"].startswith("dpapi:"):
-        pass  # 密文保持原样,save 时不再重复加密前缀判断已处理
     new_data = dict(data)
     new_data["account"] = merged
     return new_data
