@@ -29,6 +29,125 @@
     });
   }
 
+  function formatProgressSeconds(value) {
+    if (value === null || value === undefined || value === "") return "";
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds < 0) return "";
+    const total = Math.round(seconds);
+    if (total < 60) return total + " 秒";
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const rest = total % 60;
+    if (hours) return hours + " 小时 " + minutes + " 分";
+    return minutes + " 分" + (rest ? " " + rest + " 秒" : "");
+  }
+
+  function formatProgressWorkers(workers) {
+    if (!workers || typeof workers !== "object") return "";
+    const counts = {};
+    Object.values(workers).forEach((worker) => {
+      if (!worker || typeof worker !== "object") return;
+      const status = String(worker.status || "未知").trim() || "未知";
+      counts[status] = (counts[status] || 0) + 1;
+    });
+    const parts = Object.entries(counts).map(([status, count]) =>
+      count > 1 ? status + " × " + count : status);
+    return parts.length ? "进程：" + parts.join("，") : "";
+  }
+
+  function formatProgressValue(value) {
+    if (Array.isArray(value)) {
+      return value.slice(0, 8).join("、");
+    }
+    if (value && typeof value === "object") return "对象";
+    return String(value);
+  }
+
+  function formatProgressEvent(fields) {
+    const parts = [];
+    const stageNames = {
+      catalog: "专业目录抓取",
+      courses: "课程列表读取",
+      grab: "抢课轮询",
+      qa: "答题与互动",
+      study: "视频学习",
+    };
+    const stage = fields.stage && String(fields.stage)
+      || (fields.round !== undefined && fields.round !== null ? "grab" : "");
+    if (stage) parts.push(stageNames[stage] || "阶段：" + stage);
+
+    if (fields.round !== undefined && fields.round !== null) {
+      parts.push("第 " + fields.round + " 轮");
+    }
+
+    const hasDone = fields.done !== null && fields.done !== undefined;
+    const hasTotal = fields.total !== null && fields.total !== undefined;
+    const done = Number(fields.done);
+    const total = Number(fields.total);
+    const hasCount = hasDone && hasTotal
+      && Number.isFinite(done) && Number.isFinite(total);
+    if (hasCount) {
+      let countText = done + "/" + total;
+      if (total > 0) {
+        const percent = Math.min(100, Math.max(0, done / total * 100));
+        countText += "（" + (Math.round(percent * 10) / 10) + "%）";
+      }
+      parts.push(countText);
+    }
+
+    if (fields.course) parts.push(String(fields.course));
+    if (fields.title) parts.push(String(fields.title).slice(0, 120));
+
+    const hasWatched = fields.watched_seconds !== null
+      && fields.watched_seconds !== undefined;
+    const requiredRaw = fields.required_seconds !== null
+      && fields.required_seconds !== undefined
+      ? fields.required_seconds : fields.target_seconds;
+    const hasRequired = requiredRaw !== null && requiredRaw !== undefined;
+    const watched = Number(fields.watched_seconds);
+    const required = Number(requiredRaw);
+    if (hasWatched && hasRequired
+        && Number.isFinite(watched) && Number.isFinite(required)) {
+      parts.push("服务器进度 " + formatProgressSeconds(watched) +
+                 " / " + formatProgressSeconds(required));
+    } else if (fields.percent !== undefined && fields.percent !== null) {
+      const percent = Number(fields.percent);
+      if (Number.isFinite(percent)) {
+        parts.push("进度 " + (Math.round(percent * 10) / 10) + "%");
+      }
+    }
+
+    const eta = formatProgressSeconds(
+      fields.eta_seconds !== undefined && fields.eta_seconds !== null
+        ? fields.eta_seconds : fields.eta_s);
+    if (eta) parts.push("预计剩余 " + eta);
+    if (fields.polled !== undefined && fields.polled !== null) {
+      parts.push("已轮询 " + fields.polled + " 次");
+    }
+    if (fields.fatal !== undefined && fields.fatal !== null) {
+      parts.push("连续异常 " + fields.fatal + " 次");
+    }
+    if (fields.status) parts.push("状态：" + fields.status);
+
+    const workerText = formatProgressWorkers(fields.workers);
+    if (workerText) parts.push(workerText);
+
+    if (!parts.length) {
+      const labels = {
+        attempt: "尝试次数",
+        page: "页码",
+        stage: "阶段",
+        speed: "倍速",
+      };
+      Object.entries(fields).slice(0, 8).forEach(([key, value]) => {
+        if (key === "workers") return;
+        if (value === null || value === undefined || value === "") return;
+        parts.push((labels[key] || key) + "：" + formatProgressValue(value));
+      });
+    }
+    return "[进度] " + (parts.join(" · ") || "已更新");
+  }
+
   // ---------------- 状态 ----------------
 
   const state = reactive({
@@ -94,7 +213,7 @@
       const fields = Object.assign({}, msg);
       delete fields.type; delete fields.plugin; delete fields.__event__;
       state.progress[pid] = fields;
-      pushLog(pid, "[进度] " + JSON.stringify(fields), "progress");
+      pushLog(pid, formatProgressEvent(fields), "progress");
     } else if (msg.type === "status") {
       pushLog(pid, "◆ " + (msg.text || ""), "status");
     } else if (msg.type === "plugin_status") {
