@@ -18,6 +18,7 @@ ZYFW 是一款面向北师大校园学习场景的 Windows 桌面工具箱。应
 - Python 3.10 或更高版本
 - Microsoft Edge
 - 与 Edge 版本匹配的 Microsoft Edge WebDriver
+- 由于中国大陆用户难以下载Google Chrome WebDriver, 故推荐使用 Edge
 
 ## 快速开始
 
