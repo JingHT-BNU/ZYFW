@@ -1,0 +1,343 @@
+<div class="zy-config" id="bdata-ui">
+  <div class="zy-alert zy-warn">
+    答题与互动模式会调用你配置的大模型接口。模型生成内容只会暂存到本机，
+    必须在下方核验并点击“确认并提交”后，插件才会继续操作网页。
+    请填写支持 OpenAI Chat Completions 与工具调用（function/tool calling）的服务地址。
+  </div>
+
+  <div class="zy-row">
+    <div class="zy-field">
+      <label>任务类型</label>
+      <select id="bdata-mode">
+        <option value="study">刷课</option>
+        <option value="qa">答题与互动</option>
+      </select>
+    </div>
+    <button class="zy-btn zy-primary" id="bdata-save">保存配置</button>
+    <span class="zy-hint">保存后重新启动插件才会切换任务。</span>
+  </div>
+
+  <div class="zy-row">
+    <div class="zy-field bdata-wide">
+      <label>课程链接（每行一个）</label>
+      <textarea id="bdata-courses" rows="3"
+        placeholder="https://bdata.bnu.edu.cn/course?cid=..."></textarea>
+    </div>
+  </div>
+
+  <div class="zy-row">
+    <div class="zy-field">
+      <label>统一认证账号（留空用全局）</label>
+      <input type="text" id="bdata-username" autocomplete="off">
+    </div>
+    <div class="zy-field">
+      <label>统一认证密码（留空用全局）</label>
+      <input type="password" id="bdata-password" autocomplete="new-password">
+    </div>
+    <div class="zy-field">
+      <label>浏览器</label>
+      <label class="zy-hint"><input type="checkbox" id="bdata-headless"> 无头模式</label>
+    </div>
+  </div>
+
+  <div id="bdata-study-settings">
+    <div class="zy-row">
+      <div class="zy-field">
+        <label>并发浏览器数</label>
+        <input type="number" id="bdata-workers" min="1" step="1">
+      </div>
+      <div class="zy-field">
+        <label>播放倍速</label>
+        <input type="number" id="bdata-speedup" min="1" max="3" step="0.5">
+      </div>
+      <div class="zy-field">
+        <label>完成容差（秒）</label>
+        <input type="number" id="bdata-tolerance" min="0" max="30" step="1">
+      </div>
+      <div class="zy-field">
+        <label>任务筛选</label>
+        <label class="zy-hint">
+          <input type="checkbox" id="bdata-unfinished"> 只处理未完成视频
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div id="bdata-qa-settings">
+    <div class="zy-row">
+      <div class="zy-field bdata-wide">
+        <label>OpenAI Chat 兼容 API 地址</label>
+        <input type="text" id="bdata-api-url" placeholder="https://api.deepseek.com">
+      </div>
+    </div>
+    <div class="zy-row">
+      <div class="zy-field bdata-wide">
+        <label>API Key（加密保存）</label>
+        <input type="password" id="bdata-api-key" autocomplete="new-password"
+          placeholder="已加密存储">
+      </div>
+      <div class="zy-field">
+        <label>模型 ID</label>
+        <input type="text" id="bdata-model-id" placeholder="deepseek-flash">
+      </div>
+    </div>
+    <div class="zy-hint">
+      模型使用工具调用返回单选、多选和简答答案；简答题约 200 字。
+      量表题按需求固定为：负向题“不同意”、正向题“同意”。
+    </div>
+  </div>
+
+  <div class="zy-alert zy-warn" id="bdata-review" hidden>
+    <strong id="bdata-review-title">等待核验</strong>
+    <div class="zy-hint" id="bdata-review-meta"></div>
+    <div class="zy-review-context" id="bdata-review-context"></div>
+    <div class="zy-review-fields" id="bdata-review-fields"></div>
+    <div class="zy-row">
+      <button class="zy-btn zy-primary" id="bdata-approve">确认并提交</button>
+      <button class="zy-btn" id="bdata-skip">跳过本项</button>
+      <span class="zy-hint">请先修改需要调整的答案，再确认提交。</span>
+    </div>
+  </div>
+
+  <div class="zy-alert" id="bdata-msg" hidden></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var Z = window.ZyfwConfigUI;
+  if (!Z) return;
+  var $ = function (id) { return document.getElementById(id); };
+  var requestId = "";
+  var currentFields = [];
+  var sending = false;
+
+  function showMsg(text, cls) {
+    var el = $("bdata-msg");
+    if (!el) return;
+    el.textContent = text;
+    el.className = "zy-alert" + (cls ? " " + cls : "");
+    el.hidden = false;
+  }
+
+  function splitCourses(value) {
+    return String(value || "").split(/\r?\n/).map(function (line) {
+      return line.trim();
+    }).filter(Boolean);
+  }
+
+  function collectConfig() {
+    return {
+      task_mode: $("bdata-mode").value,
+      course_urls: splitCourses($("bdata-courses").value),
+      only_unfinished: $("bdata-unfinished").checked,
+      workers: Math.max(1, Number($("bdata-workers").value) || 1),
+      speedup: Math.min(3, Math.max(1, Number($("bdata-speedup").value) || 3)),
+      completion_tolerance: Math.max(0, Number($("bdata-tolerance").value) || 3),
+      headless: $("bdata-headless").checked,
+      username: $("bdata-username").value,
+      password: $("bdata-password").value,
+      api_url: $("bdata-api-url").value.trim(),
+      api_key: $("bdata-api-key").value,
+      model_id: $("bdata-model-id").value.trim()
+    };
+  }
+
+  function syncMode() {
+    var qa = $("bdata-mode").value === "qa";
+    $("bdata-study-settings").hidden = qa;
+    $("bdata-qa-settings").hidden = !qa;
+  }
+
+  async function save() {
+    try {
+      await Z.saveConfig(collectConfig());
+      Z.message("success", "配置已保存；重新启动插件后生效");
+      showMsg("配置已保存。答题模式会先暂停等待你核验，不会直接提交。", "zy-warn");
+    } catch (e) {
+      Z.message("error", "保存失败: " + e.message);
+    }
+  }
+
+  function optionList(field) {
+    return Array.isArray(field.options) ? field.options : [];
+  }
+
+  function addField(container, field) {
+    var card = document.createElement("div");
+    card.className = "zy-review-field";
+    var label = document.createElement("label");
+    label.textContent = field.label || field.key || "题目";
+    card.appendChild(label);
+    var type = field.type || "text";
+    var value = field.value;
+
+    if (type === "single" || type === "scale") {
+      var select = document.createElement("select");
+      select.dataset.key = field.key;
+      select.dataset.type = type;
+      optionList(field).forEach(function (option) {
+        var item = document.createElement("option");
+        item.value = String(option.value);
+        item.textContent = option.label || option.value;
+        item.selected = String(option.value) === String(value);
+        select.appendChild(item);
+      });
+      card.appendChild(select);
+    } else if (type === "multiple") {
+      var group = document.createElement("div");
+      group.className = "zy-review-options";
+      group.dataset.key = field.key;
+      group.dataset.type = type;
+      var selected = Array.isArray(value) ? value.map(String) : [];
+      optionList(field).forEach(function (option) {
+        var optionLabel = document.createElement("label");
+        optionLabel.className = "zy-hint";
+        var checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = String(option.value);
+        checkbox.checked = selected.indexOf(String(option.value)) >= 0;
+        optionLabel.appendChild(checkbox);
+        optionLabel.appendChild(document.createTextNode(
+          " " + (option.label || option.value)));
+        group.appendChild(optionLabel);
+      });
+      card.appendChild(group);
+    } else {
+      var textarea = document.createElement("textarea");
+      textarea.rows = type === "short" || type === "text" ? 5 : 3;
+      textarea.dataset.key = field.key;
+      textarea.dataset.type = type;
+      textarea.value = String(value || "");
+      card.appendChild(textarea);
+    }
+    container.appendChild(card);
+  }
+
+  function renderRequest(request) {
+    if (!request) {
+      requestId = "";
+      currentFields = [];
+      $("bdata-review").hidden = true;
+      $("bdata-review-title").textContent = "";
+      $("bdata-review-meta").textContent = "";
+      $("bdata-review-context").textContent = "";
+      $("bdata-review-fields").textContent = "";
+      return;
+    }
+    if (request.id === requestId) return;
+    requestId = request.id;
+    currentFields = Array.isArray(request.fields) ? request.fields : [];
+    $("bdata-review-title").textContent = request.title || "等待核验";
+    $("bdata-review-meta").textContent =
+      request.kind === "quiz"
+        ? "请核对并修改测验答案。确认后才会填写并提交试卷。"
+        : "请核对并修改评论与回复。确认后才会发表。";
+    var context = $("bdata-review-context");
+    context.textContent = "";
+    (request.context || []).forEach(function (line) {
+      var item = document.createElement("div");
+      item.className = "zy-review-context-line";
+      item.textContent = line;
+      context.appendChild(item);
+    });
+    var fields = $("bdata-review-fields");
+    fields.textContent = "";
+    currentFields.forEach(function (field) { addField(fields, field); });
+    $("bdata-approve").disabled = false;
+    $("bdata-skip").disabled = false;
+    $("bdata-review").hidden = false;
+    $("bdata-review").scrollIntoView({block: "nearest"});
+  }
+
+  function reviewedPayload() {
+    var root = $("bdata-review-fields");
+    var fields = [];
+    currentFields.forEach(function (field) {
+      var key = field.key;
+      var type = field.type || "text";
+      var value = "";
+      if (type === "single" || type === "scale") {
+        var select = root.querySelector('select[data-key="' + CSS.escape(String(key)) + '"]');
+        value = select ? select.value : String(field.value || "");
+      } else if (type === "multiple") {
+        var group = root.querySelector('div[data-key="' + CSS.escape(String(key)) + '"]');
+        value = group ? Array.from(group.querySelectorAll("input:checked"))
+          .map(function (el) { return el.value; }) : [];
+      } else {
+        var area = root.querySelector('textarea[data-key="' + CSS.escape(String(key)) + '"]');
+        value = area ? area.value : String(field.value || "");
+      }
+      fields.push({ key: key, value: value });
+    });
+    return { fields: fields };
+  }
+
+  async function decide(action) {
+    if (!requestId || sending) return;
+    sending = true;
+    $("bdata-approve").disabled = true;
+    $("bdata-skip").disabled = true;
+    try {
+      await Z.api("plugins/bdata-autoplay/review", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          request_id: requestId,
+          action: action,
+          payload: action === "approve" ? reviewedPayload() : { fields: [] }
+        })
+      });
+      Z.message("success", action === "approve"
+        ? "已确认，插件将继续提交" : "已跳过本项");
+    } catch (e) {
+      $("bdata-approve").disabled = false;
+      $("bdata-skip").disabled = false;
+      Z.message("error", e.message);
+    } finally {
+      sending = false;
+    }
+  }
+
+  async function pollReview() {
+    if (!document.getElementById("bdata-review")) return;
+    try {
+      var data = await Z.api("plugins/bdata-autoplay/review");
+      renderRequest(data.request || null);
+      if (data.response && data.request) {
+        $("bdata-review-meta").textContent =
+          "已确认，正在等待插件执行网页提交…";
+      }
+    } catch (e) {
+      /* 下一轮继续读取 */
+    }
+  }
+
+  (async function init() {
+    var cfg = await Z.getConfig();
+    $("bdata-mode").value = cfg.task_mode === "qa" ? "qa" : "study";
+    $("bdata-courses").value = (cfg.course_urls || []).join("\n");
+    $("bdata-unfinished").checked = cfg.only_unfinished !== false;
+    $("bdata-workers").value = cfg.workers || 2;
+    $("bdata-speedup").value = Math.min(3, cfg.speedup || 3);
+    $("bdata-tolerance").value = cfg.completion_tolerance != null
+      ? cfg.completion_tolerance : 3;
+    $("bdata-headless").checked = cfg.headless !== false;
+    $("bdata-username").value = cfg.username || "";
+    $("bdata-password").value = cfg.password || "";
+    $("bdata-api-url").value =
+      cfg.api_url || "https://api.deepseek.com";
+    $("bdata-api-key").value = cfg.api_key || "";
+    $("bdata-model-id").value = cfg.model_id || "deepseek-flash";
+    $("bdata-mode").addEventListener("change", syncMode);
+    $("bdata-save").addEventListener("click", save);
+    $("bdata-approve").addEventListener("click", function () { decide("approve"); });
+    $("bdata-skip").addEventListener("click", function () { decide("skip"); });
+    syncMode();
+    await pollReview();
+    setInterval(pollReview, 2000);
+  })().catch(function (e) {
+    showMsg("配置界面初始化失败: " + e.message, "zy-error");
+  });
+})();
+</script>

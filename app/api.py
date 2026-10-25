@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import tempfile
 import threading
@@ -21,6 +22,7 @@ api_router = APIRouter(prefix="/api")
 global_config = GlobalConfig()
 runner = Runner()
 pm = PluginManager(runner)
+_BDATA_ID = "bdata-autoplay"
 
 # ---------------- 窗口关闭自动退出 ----------------
 # 页面通过 WebSocket 保持连接;所有客户端断开且宽限期内无人重连(如页面刷新)时,
@@ -237,6 +239,9 @@ def start_plugin(plugin_id: str):
         raise HTTPException(404, str(e))
     if runner.is_running(plugin_id):
         raise HTTPException(409, "插件已在运行")
+    if plugin_id == _BDATA_ID:
+        for path in _review_paths(plugin_id):
+            path.unlink(missing_ok=True)
     cfg = PluginConfigStore(plugin_id).get()
     effective = _effective_plugin_config(plugin, cfg)
     data_dir = pm.plugin_data_dir(plugin_id)
@@ -255,6 +260,82 @@ def start_plugin(plugin_id: str):
 @api_router.post("/plugins/{plugin_id}/stop")
 def stop_plugin(plugin_id: str):
     runner.stop(plugin_id)
+    if plugin_id == _BDATA_ID:
+        for path in _review_paths(plugin_id):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return {"ok": True}
+
+
+def _review_paths(plugin_id: str) -> tuple[Path, Path]:
+    if plugin_id != _BDATA_ID:
+        raise HTTPException(404, f"插件不存在: {plugin_id}")
+    data_dir = pm.plugin_data_dir(plugin_id)
+    return data_dir / "review_request.json", data_dir / "review_response.json"
+
+
+def _read_json_object(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+@api_router.get("/plugins/{plugin_id}/review")
+def get_review(plugin_id: str):
+    request_path, response_path = _review_paths(plugin_id)
+    if not runner.is_running(plugin_id):
+        return {"request": None, "response": None}
+    request = _read_json_object(request_path)
+    response = _read_json_object(response_path)
+    if request and response and response.get("request_id") != request.get("id"):
+        response = None
+    return {"request": request, "response": response}
+
+
+@api_router.put("/plugins/{plugin_id}/review")
+async def save_review(plugin_id: str, body: dict):
+    request_path, response_path = _review_paths(plugin_id)
+    if not runner.is_running(plugin_id):
+        raise HTTPException(409, "插件当前未运行")
+    request = _read_json_object(request_path)
+    if not request:
+        raise HTTPException(409, "当前没有待确认内容")
+    request_id = str(body.get("request_id") or "")
+    if request_id != str(request.get("id") or ""):
+        raise HTTPException(409, "确认内容已失效，请刷新后重试")
+    action = str(body.get("action") or "approve")
+    if action not in {"approve", "skip"}:
+        raise HTTPException(422, "action 必须是 approve 或 skip")
+    payload = body.get("payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(422, "payload 必须是 JSON 对象")
+    response = {
+        "request_id": request_id,
+        "action": action,
+        "payload": payload,
+    }
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", dir=response_path.parent,
+                prefix=".review-response-", suffix=".tmp",
+                delete=False) as handle:
+            tmp_path = handle.name
+            json.dump(response, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, response_path)
+        tmp_path = None
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     return {"ok": True}
 
 

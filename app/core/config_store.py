@@ -13,7 +13,7 @@ from typing import Any
 _ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = _ROOT / "data"
 
-_SECRET_KEYS = {"password", "secret", "token"}
+_SECRET_KEYS = {"password", "secret", "token", "api_key"}
 _FERNET_PREFIX = "fernet:"
 _FERNET_KEY_NAME = ".credentials.key"
 _RETIRED_SECRET_PREFIX = "dpapi:"

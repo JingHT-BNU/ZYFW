@@ -11,15 +11,18 @@ from __future__ import annotations
 import json
 import os
 import queue
+import random
 import re
 import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _sdk.sdk import (  # noqa: E402
     PluginContext,
@@ -30,6 +33,12 @@ from _sdk.sdk import (  # noqa: E402
 from selenium.common.exceptions import WebDriverException  # noqa: E402
 from selenium.webdriver.common.by import By  # noqa: E402
 
+from llm import (  # noqa: E402
+    LLMError,
+    generate_interaction,
+    generate_quiz_answers,
+)
+
 LOGIN_HOME = "https://bdata.bnu.edu.cn/"
 COURSE_DATA_API = "/wechatapi/api/learn/getCourseData"
 COOKIE_LIFE_SECONDS = 7 * 86400
@@ -39,6 +48,7 @@ TASK_BUTTON_XPATH = (
     '/span/button[1]'
 )
 TASK_VIDEO_ICON_PREFIX = "M512 64a448"
+TASK_TEST_ICON_PREFIX = "m199.04 672.64 1"
 DURATION_XPATH = (
     '//*[@id="app"]/section/main/div/div[2]/div[2]/div/div[1]'
     '/div[3]/span/div/span[4]/span'
@@ -56,6 +66,18 @@ SUBMIT_XPATH = (
     '//button[contains(., "登录")] | //a[contains(., "登录")] '
     '| //input[@type="submit"]'
 )
+QUIZ_SUBMIT_XPATH = (
+    '//*[@id="app"]/section/main/div/div[2]/div[3]/div[2]'
+    '/div/div/div[1]/div/div/button'
+)
+SURVEY_QUESTIONS = (
+    "本章节的学习内容让我觉得很无聊。",
+    "因学习内容枯燥，我在学习过程中非常容易分心。",
+    "学习时，我会感到紧张和焦虑。",
+    "我认为本章所学内容能应用到实际生活或未来的工作中。",
+    "我对必须完成的学习任务感到厌烦。",
+)
+SURVEY_VALUES = (1, 1, 1, 3, 1)
 
 DURATION_RE = re.compile(
     r"(?:观看视频|视频时长|学习时长)?\s*"
@@ -179,6 +201,88 @@ def load_cookies(ctx: PluginContext) -> list[dict]:
         return []
 
 
+def _write_json_atomic(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", dir=path.parent,
+                prefix=f".{path.name}-", suffix=".tmp",
+                delete=False) as handle:
+            tmp_path = handle.name
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _read_json_object(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+class ReviewBroker:
+    """Pause automation until the local configuration UI approves a draft."""
+
+    def __init__(self, ctx: PluginContext):
+        self.ctx = ctx
+        self.request_path = Path(ctx.datadir) / "review_request.json"
+        self.response_path = Path(ctx.datadir) / "review_response.json"
+
+    def clear(self) -> None:
+        for path in (self.request_path, self.response_path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def ask(self, kind: str, title: str, fields: list[dict],
+            context: list[str] | None = None,
+            timeout: float = 24 * 3600) -> dict | None:
+        self.clear()
+        request = {
+            "id": uuid.uuid4().hex,
+            "kind": kind,
+            "title": title,
+            "fields": fields,
+            "context": context or [],
+            "created_at": time.time(),
+        }
+        _write_json_atomic(self.request_path, request)
+        self.ctx.status("等待用户核验模型生成内容…", review_id=request["id"])
+        deadline = time.time() + timeout
+        try:
+            while time.time() < deadline:
+                response = _read_json_object(self.response_path)
+                if response and response.get("request_id") == request["id"]:
+                    try:
+                        self.response_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    return response
+                time.sleep(0.5)
+        finally:
+            try:
+                self.request_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            try:
+                self.response_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise TimeoutError("等待用户核验超时")
+
+
 def inject_cookies(driver, cookies: list[dict]) -> None:
     if not cookies:
         return
@@ -255,37 +359,176 @@ def _scroll_task_pane(driver) -> bool:
     return bool(driver.execute_script(js))
 
 
+def _task_pane_ready(driver, require_cards: bool = True) -> bool:
+    return bool(driver.execute_script(
+        """
+        const pane = document.getElementById('pane-first');
+        if (!pane) return false;
+        const visible = !!(pane.offsetWidth || pane.offsetHeight || pane.getClientRects().length);
+        if (!visible) return false;
+        if (!arguments[0]) return true;
+        return !!pane.querySelector('.el-card span.el-text i > svg > path');
+        """,
+        require_cards,
+    ))
+
+
+def open_task_dialog(driver) -> None:
+    last_error: Exception | None = None
+    for _ in range(4):
+        time.sleep(0.8)
+        button = find(driver, TASK_BUTTON_XPATH, timeout=10)
+        if button is None:
+            button = find(
+                driver,
+                '//button[contains(normalize-space(.), "查看任务进度")]',
+                timeout=5,
+            )
+        if button is None:
+            raise RuntimeError("未找到“查看任务进度”按钮")
+        try:
+            driver.execute_script("arguments[0].click();", button)
+        except WebDriverException as exc:
+            last_error = exc
+            time.sleep(0.3)
+            continue
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            if _task_pane_ready(driver):
+                time.sleep(0.5)
+                if _task_pane_ready(driver):
+                    return
+            time.sleep(0.2)
+        if _task_pane_ready(driver, require_cards=False):
+            try:
+                close_task_dialog(driver)
+            except RuntimeError:
+                pass
+    raise RuntimeError(f"任务进度窗口未能打开: {last_error}")
+
+
+def _task_groups_snapshot(driver) -> list[dict]:
+    js = """
+    const pane = document.getElementById('pane-first');
+    if (!pane) return [];
+    const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
+    const cards = Array.from(pane.children)
+        .filter(el => el.classList && el.classList.contains('el-card'));
+    return cards.map((card, groupIndex) => {
+        const body = Array.from(card.children)
+            .find(el => el.classList && el.classList.contains('el-card__body'));
+        if (!body) return {groupIndex, header: '', metrics: [], items: []};
+        const spans = Array.from(body.querySelectorAll('span.el-text'));
+        const headers = spans.filter(span => !span.querySelector('i > svg > path'));
+        const items = spans.filter(span => span.querySelector('i > svg > path'))
+            .map(span => {
+                const clone = span.cloneNode(true);
+                clone.querySelectorAll('.el-tag').forEach(el => el.remove());
+                const icon = span.querySelector('i > svg > path');
+                const tags = Array.from(span.querySelectorAll('.el-tag__content'))
+                    .map(el => norm(el.textContent));
+                return {
+                    title: norm(clone.textContent),
+                    icon: icon ? (icon.getAttribute('d') || '').slice(0, 16) : '',
+                    tags,
+                };
+            }).filter(item => item.title);
+        return {
+            groupIndex,
+            header: headers.map(el => norm(el.innerText)).join(' '),
+            metrics: headers.flatMap(el =>
+                Array.from(el.querySelectorAll('.el-tag__content'))
+                    .map(tag => norm(tag.textContent))),
+            items,
+        };
+    }).filter(group => group.items.length || group.header);
+    """
+    groups = driver.execute_script(js)
+    return groups if isinstance(groups, list) else []
+
+
+def collect_task_groups(driver) -> list[dict]:
+    open_task_dialog(driver)
+    merged: dict[str, dict] = {}
+    order: list[str] = []
+    try:
+        for _ in range(40):
+            groups = _task_groups_snapshot(driver)
+            if not groups:
+                time.sleep(0.3)
+                continue
+            for group in groups:
+                header = normalize_title(group.get("header"))
+                key = header or f"group-{group.get('groupIndex')}"
+                if key not in merged:
+                    merged[key] = {
+                        "header": header,
+                        "metrics": [],
+                        "items": [],
+                    }
+                    order.append(key)
+                merged[key]["metrics"] = list(dict.fromkeys(
+                    merged[key]["metrics"] + group.get("metrics", [])))
+                seen = {item["title"] for item in merged[key]["items"]}
+                for item in group.get("items", []):
+                    if item.get("title") not in seen:
+                        merged[key]["items"].append(item)
+                        seen.add(item.get("title"))
+            if not _scroll_task_pane(driver):
+                break
+            time.sleep(0.15)
+    finally:
+        close_task_dialog(driver)
+    return [merged[key] for key in order]
+
+
+def task_group_has(group: dict, name: str) -> bool:
+    prefix = f"{name}0/"
+    return any(str(metric).startswith(prefix) for metric in group.get("metrics", []))
+
+
+def click_task_entry(driver, title: str) -> None:
+    js = """
+    const pane = document.getElementById('pane-first');
+    if (!pane) return false;
+    if (!(pane.offsetWidth || pane.offsetHeight || pane.getClientRects().length)) {
+        return false;
+    }
+    const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
+    const target = norm(arguments[0]);
+    for (const span of pane.querySelectorAll('span.el-text')) {
+        const clone = span.cloneNode(true);
+        clone.querySelectorAll('.el-tag').forEach(el => el.remove());
+        if (norm(clone.textContent) !== target) continue;
+        span.scrollIntoView({block: 'center'});
+        span.click();
+        return true;
+    }
+    return false;
+    """
+    if not driver.execute_script(js, title):
+        raise RuntimeError(f"任务进度中未找到: {title}")
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if not _task_pane_ready(driver, require_cards=False):
+            wait_active_menu_title(driver, title, timeout=5)
+            time.sleep(1.0)
+            return
+        time.sleep(0.2)
+    close_task_dialog(driver)
+    wait_active_menu_title(driver, title, timeout=10)
+    time.sleep(1.0)
+
+
 def collect_task_videos(driver) -> list[dict]:
     """Open the task dialog and collect required videos by their play icon."""
-    button = find(driver, TASK_BUTTON_XPATH, timeout=10)
-    if button is None:
-        button = find(
-            driver,
-            '//button[contains(normalize-space(.), "查看任务进度")]',
-            timeout=5,
-        )
-    if button is None:
-        raise RuntimeError("未找到“查看任务进度”按钮")
-    try:
-        button.click()
-    except WebDriverException:
-        driver.execute_script("arguments[0].click();", button)
-    find_strict(driver, '//*[@id="pane-first"]', timeout=15)
-
-    collected: dict[str, dict] = {}
-    for _ in range(30):
-        for row in _task_video_entries(driver):
-            title = normalize_title(row.get("title"))
-            if title:
-                collected[title] = {
-                    "title": title,
-                    "watched": normalize_title(row.get("watched")),
-                }
-        if not _scroll_task_pane(driver):
-            break
-        time.sleep(0.15)
-    close_task_dialog(driver)
-    return list(collected.values())
+    videos: dict[str, dict] = {}
+    for group in collect_task_groups(driver):
+        for item in group.get("items", []):
+            if item.get("icon", "").startswith(TASK_VIDEO_ICON_PREFIX):
+                title = normalize_title(item.get("title"))
+                videos[title] = {"title": title, "watched": ""}
+    return list(videos.values())
 
 
 def close_task_dialog(driver) -> None:
@@ -315,8 +558,387 @@ def close_task_dialog(driver) -> None:
         while time.time() < deadline:
             if not driver.find_elements(By.ID, "pane-first"):
                 return
+            if not _task_pane_ready(driver, require_cards=False):
+                return
             time.sleep(0.1)
     raise RuntimeError("任务进度窗口未能关闭")
+
+
+def read_quiz_fields(driver) -> list[dict]:
+    deadline = time.time() + 25
+    rows: list[dict] = []
+    while time.time() < deadline:
+        rows = driver.execute_script(
+            """
+            const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
+            return Array.from(document.querySelectorAll('[id^="quz"]')).map(row => {
+                const card = row.closest('.el-card') || row.parentElement;
+                const radios = Array.from(card.querySelectorAll('input[type=radio]'));
+                const checks = Array.from(card.querySelectorAll('input[type=checkbox]'));
+                const options = (checks.length ? checks : radios).map(input => ({
+                    value: input.value || '',
+                    label: norm(
+                        (input.closest('.el-radio, .el-checkbox') || input.parentElement)
+                            .innerText || ''
+                    ),
+                }));
+                return {
+                    id: row.id,
+                    text: norm(row.innerText),
+                    cardText: norm(card.innerText),
+                    radioGroups: Array.from(new Set(radios.map(el => el.name))).length,
+                    radios: radios.length,
+                    checks: checks.length,
+                    textareas: card.querySelectorAll('textarea').length,
+                    options,
+                };
+            });
+            """
+        )
+        if rows:
+            break
+        time.sleep(0.5)
+    if not rows:
+        raise RuntimeError("未识别到答题界面")
+
+    fields: list[dict] = []
+    for row in rows:
+        qid = str(row.get("id") or "")
+        text = normalize_title(row.get("text"))
+        radios = int(row.get("radios") or 0)
+        checks = int(row.get("checks") or 0)
+        radio_groups = int(row.get("radioGroups") or 0)
+        card_text = normalize_title(row.get("cardText"))
+        if (radio_groups >= 5 and "非常不同意" in card_text
+                and "非常同意" in card_text):
+            for index, (label, value) in enumerate(
+                    zip(SURVEY_QUESTIONS, SURVEY_VALUES, strict=True)):
+                fields.append({
+                    "key": f"{qid}_survey_{index}",
+                    "label": f"量表 {index + 1}：{label}",
+                    "type": "scale",
+                    "options": [
+                        {"value": str(i), "label": label_}
+                        for i, label_ in enumerate(
+                            ("非常不同意", "不同意", "一般", "同意", "非常同意"))
+                    ],
+                    "value": str(value),
+                    "control_id": qid,
+                    "group_index": index,
+                })
+            continue
+        if "单选题" in text and radios:
+            fields.append({
+                "key": qid,
+                "label": re.sub(
+                    r"\s*单选题（\d+分）\s*$", "", text).strip(),
+                "type": "single",
+                "options": row.get("options") or [],
+                "value": "",
+            })
+        elif "多选题" in text and checks:
+            fields.append({
+                "key": qid,
+                "label": re.sub(
+                    r"\s*多选题（\d+分）\s*$", "", text).strip(),
+                "type": "multiple",
+                "options": row.get("options") or [],
+                "value": [],
+            })
+        elif "简答题" in text and int(row.get("textareas") or 0):
+            fields.append({
+                "key": qid,
+                "label": re.sub(
+                    r"\s*简答题（\d+分）\s*$", "", text).strip(),
+                "type": "short",
+                "value": "",
+            })
+    if not fields:
+        raise RuntimeError("答题界面中没有可处理的题目")
+    return fields
+
+
+def _quiz_value(fields: list[dict], key: str) -> object:
+    for field in fields:
+        if field.get("key") == key:
+            return field.get("value")
+    return None
+
+
+def fill_quiz(driver, fields: list[dict]) -> None:
+    for field in fields:
+        kind = field.get("type")
+        value = field.get("value")
+        if kind == "scale":
+            ok = driver.execute_script(
+                """
+                const row = document.getElementById(arguments[0]);
+                const card = row && (row.closest('.el-card') || row.parentElement);
+                if (!card) return false;
+                const groups = [];
+                for (const input of card.querySelectorAll('input[type=radio]')) {
+                    let group = groups.find(g => g.name === input.name);
+                    if (!group) {
+                        group = {name: input.name, inputs: []};
+                        groups.push(group);
+                    }
+                    group.inputs.push(input);
+                }
+                const group = groups[arguments[1]];
+                if (!group) return false;
+                const input = group.inputs.find(el => el.value === String(arguments[2]));
+                if (!input) return false;
+                input.click();
+                return true;
+                """,
+                field.get("control_id"),
+                field.get("group_index"),
+                str(value),
+            )
+            if not ok:
+                raise RuntimeError(f"量表选项设置失败: {field.get('label')}")
+        elif kind in {"single", "multiple"}:
+            values = value if isinstance(value, list) else [value]
+            selector = "radio" if kind == "single" else "checkbox"
+            wanted = {str(item) for item in values}
+            options = [
+                str(option.get("value"))
+                for option in field.get("options", [])
+                if option.get("value") is not None
+            ]
+            targets = options if kind == "multiple" else list(wanted)
+            for target in targets:
+                should = target in wanted
+                if kind == "single" and not should:
+                    continue
+                found = driver.execute_script(
+                    """
+                    const row = document.getElementById(arguments[0]);
+                    const card = row && (row.closest('.el-card') || row.parentElement);
+                    if (!card) return false;
+                    const input = Array.from(card.querySelectorAll(
+                        'input[type=' + arguments[3] + ']'))
+                        .find(el => el.value === String(arguments[1]));
+                    if (!input) return false;
+                    if (input.checked !== Boolean(arguments[2])) {
+                        const control = input.closest(
+                            arguments[3] === 'radio' ? '.el-radio' : '.el-checkbox');
+                        (control || input).click();
+                    }
+                    return true;
+                    """,
+                    field.get("key"), target, should, selector,
+                )
+                if not found:
+                    raise RuntimeError(
+                        f"选项设置失败: {field.get('label')} / {target}")
+                time.sleep(0.12)
+                checked = driver.execute_script(
+                    """
+                    const row = document.getElementById(arguments[0]);
+                    const card = row && (row.closest('.el-card') || row.parentElement);
+                    if (!card) return false;
+                    const input = Array.from(card.querySelectorAll(
+                        'input[type=' + arguments[3] + ']'))
+                        .find(el => el.value === String(arguments[1]));
+                    return !!input && input.checked === Boolean(arguments[2]);
+                    """,
+                    field.get("key"), target, should, selector,
+                )
+                if not checked:
+                    raise RuntimeError(
+                        f"选项未生效: {field.get('label')} / {target}")
+            if not wanted:
+                raise RuntimeError(f"选项设置失败: {field.get('label')}")
+        elif kind == "short":
+            text = str(value or "").strip()
+            if not text:
+                raise RuntimeError(f"简答题答案为空: {field.get('label')}")
+            row = driver.find_element(By.ID, field["key"])
+            card = driver.execute_script(
+                "return arguments[0].closest('.el-card') || arguments[0].parentElement;",
+                row,
+            )
+            textareas = card.find_elements(By.CSS_SELECTOR, "textarea")
+            visible = [el for el in textareas if el.is_displayed()]
+            if not visible:
+                raise RuntimeError(f"未找到简答题输入框: {field.get('label')}")
+            element = visible[0]
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center'});"
+                "arguments[0].focus();", element)
+            element.clear()
+            element.send_keys(text)
+
+
+def _click_visible_button(driver, text: str, scope: str = "") -> bool:
+    return bool(driver.execute_script(
+        """
+        const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
+        const visible = el =>
+            !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+        const root = arguments[1] ? document.querySelector(arguments[1]) : document;
+        if (!root) return false;
+        const buttons = Array.from(root.querySelectorAll('button'))
+            .filter(el => visible(el) && norm(el.innerText) === arguments[0]);
+        if (!buttons.length) return false;
+        buttons[buttons.length - 1].scrollIntoView({block: 'center'});
+        buttons[buttons.length - 1].click();
+        return true;
+        """,
+        text,
+        scope,
+    ))
+
+
+def submission_tag_colors(driver) -> list[str]:
+    colors = driver.execute_script(
+        """
+        const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
+        return Array.from(document.querySelectorAll('span, div'))
+            .filter(el => norm(el.innerText) === '提交问卷')
+            .map(el => el.style.color || getComputedStyle(el).color)
+            .filter(Boolean);
+        """
+    )
+    return [str(c).lower() for c in (colors or [])]
+
+
+def _quiz_marked_submitted(driver, test_title: str) -> bool:
+    colors = submission_tag_colors(driver)
+    if any("67c23a" in color or "103, 194, 58" in color for color in colors):
+        return True
+    try:
+        groups = collect_task_groups(driver)
+    except Exception:
+        return False
+    for group in groups:
+        for item in group.get("items", []):
+            if normalize_title(item.get("title")) == normalize_title(test_title):
+                return "已提交" in item.get("tags", [])
+    return False
+
+
+def submit_quiz(driver, test_title: str) -> bool:
+    button = find(driver, QUIZ_SUBMIT_XPATH, timeout=10)
+    if button is None:
+        button = find(
+            driver,
+            '//button[normalize-space(.)="提交" or normalize-space(.)="提交试卷"]',
+            timeout=5,
+        )
+    if button is None:
+        raise RuntimeError("未找到测验提交按钮")
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block:'center'});", button)
+    try:
+        button.click()
+    except WebDriverException:
+        driver.execute_script("arguments[0].click();", button)
+
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        clicked = driver.execute_script(
+            """
+            const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
+            const visible = el =>
+                !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+            const boxes = Array.from(document.querySelectorAll('.el-message-box'))
+                .filter(visible);
+            if (!boxes.length) return false;
+            const buttons = Array.from(boxes[boxes.length - 1].querySelectorAll('button'))
+                .filter(visible);
+            const target = buttons.find(el => ['确定', '确认'].includes(norm(el.innerText)))
+                || buttons[buttons.length - 1];
+            if (!target) return false;
+            target.click();
+            return true;
+            """
+        )
+        if clicked:
+            break
+        time.sleep(0.3)
+
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        if _quiz_marked_submitted(driver, test_title):
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def read_comment_cards(driver) -> list[dict]:
+    cards = driver.execute_script(
+        """
+        const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
+        const bar = document.getElementById('commentBarScroll');
+        if (!bar) return [];
+        return Array.from(bar.querySelectorAll(':scope > ul > li')).map((li, index) => ({
+            index,
+            user: norm((li.querySelector('.nameRow .name') || {}).innerText || ''),
+            text: norm((li.querySelector('.nameRow .text') || {}).innerText || ''),
+        })).filter(item => item.text);
+        """
+    )
+    return cards if isinstance(cards, list) else []
+
+
+def _visible_editor(driver):
+    editors = driver.find_elements(By.CSS_SELECTOR, "textarea, [contenteditable=true]")
+    visible = [el for el in editors if el.is_displayed()]
+    return visible[-1] if visible else None
+
+
+def _enter_editor_text(driver, text: str) -> None:
+    editor = _visible_editor(driver)
+    if editor is None:
+        raise RuntimeError("评论编辑器未出现")
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block:'center'});"
+        "arguments[0].focus();", editor)
+    editor.clear()
+    editor.send_keys(text)
+
+
+def post_comment(driver, text: str) -> None:
+    if not _click_visible_button(driver, "发表评论"):
+        raise RuntimeError("未找到“发表评论”按钮")
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if _visible_editor(driver) is not None:
+            break
+        time.sleep(0.2)
+    _enter_editor_text(driver, text)
+    if not _click_visible_button(driver, "确认"):
+        raise RuntimeError("未找到评论确认按钮")
+    time.sleep(1.5)
+
+
+def post_reply(driver, text: str) -> None:
+    opened = driver.execute_script(
+        """
+        const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
+        const first = document.querySelector('#commentBarScroll > ul > li');
+        if (!first) return false;
+        first.scrollIntoView({block: 'center'});
+        const button = Array.from(first.querySelectorAll('button'))
+            .find(el => norm(el.innerText) === '回复');
+        if (!button) return false;
+        button.click();
+        return true;
+        """
+    )
+    if not opened:
+        raise RuntimeError("未找到第一条评论的回复按钮")
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if _visible_editor(driver) is not None:
+            break
+        time.sleep(0.2)
+    _enter_editor_text(driver, text)
+    if not _click_visible_button(driver, "确认"):
+        raise RuntimeError("未找到回复确认按钮")
+    time.sleep(1.5)
 
 
 def _login(ctx: PluginContext, driver, course_url: str) -> None:
@@ -822,6 +1444,194 @@ def run_parallel(ctx: PluginContext, jobs: list[dict], cookies: list[dict],
     return tracker
 
 
+def _reviewed_fields(fields: list[dict], response: dict | None) -> list[dict]:
+    if not response or response.get("action") != "approve":
+        return fields
+    payload = response.get("payload")
+    raw_fields = payload.get("fields") if isinstance(payload, dict) else None
+    if not isinstance(raw_fields, list):
+        return fields
+    reviewed = {
+        str(item.get("key")): item.get("value")
+        for item in raw_fields if isinstance(item, dict) and item.get("key")
+    }
+    for field in fields:
+        if field.get("key") in reviewed:
+            field["value"] = reviewed[field["key"]]
+    return fields
+
+
+def _metric_value(metrics: list[str], name: str) -> tuple[int, int]:
+    pattern = re.compile(rf"^{re.escape(name)}(\d+)/(\d+)$")
+    for metric in metrics:
+        match = pattern.match(normalize_title(metric))
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    return 0, 0
+
+
+def run_quiz_item(ctx: PluginContext, driver, broker: ReviewBroker,
+                  course_title: str, test_title: str,
+                  model: tuple[str, str, str]) -> bool:
+    open_task_dialog(driver)
+    click_task_entry(driver, test_title)
+    fields = read_quiz_fields(driver)
+    model_fields = [field for field in fields if field.get("type") != "scale"]
+    ctx.status(f"正在生成答案: {test_title}")
+    answers = generate_quiz_answers(
+        *model, course_title, test_title, model_fields)
+    for field in model_fields:
+        answer = answers.get(field["key"], {})
+        field["value"] = answer.get(
+            "selected", "") if field["type"] == "single" else answer.get(
+            "selected", []) if field["type"] == "multiple" else answer.get(
+            "text", "")
+    ctx.log(f"模型已生成 {test_title} 的答案，等待用户核验")
+    response = broker.ask("quiz", f"测验：{test_title}", fields)
+    if not response or response.get("action") == "skip":
+        ctx.log(f"用户跳过测验: {test_title}")
+        return False
+    reviewed = _reviewed_fields(fields, response)
+    fill_quiz(driver, reviewed)
+    ctx.status(f"正在提交测验: {test_title}")
+    if not submit_quiz(driver, test_title):
+        raise RuntimeError("提交后未检测到已提交状态或成功颜色")
+    ctx.log(f"测验已提交: {test_title}")
+    return True
+
+
+def run_interaction_group(ctx: PluginContext, driver, broker: ReviewBroker,
+                          course_url: str, course_title: str, group: dict,
+                          model: tuple[str, str, str]) -> bool:
+    videos = [
+        item for item in group.get("items", [])
+        if item.get("icon", "").startswith(TASK_VIDEO_ICON_PREFIX)
+    ]
+    if not videos:
+        ctx.log(f"互动任务没有可打开的视频，跳过: {group.get('header')}")
+        return False
+    video_title = normalize_title(videos[0].get("title"))
+    need_comment = task_group_has(group, "评论")
+    need_reply = task_group_has(group, "回复")
+    if not need_comment and not need_reply:
+        return False
+
+    driver.get(course_url)
+    open_task_dialog(driver)
+    click_task_entry(driver, video_title)
+    time.sleep(1.5)
+    comments = read_comment_cards(driver)
+    texts = [normalize_title(card.get("text")) for card in comments if card.get("text")]
+    if not texts:
+        raise RuntimeError("评论区没有可用于参考的评论")
+    sample = random.sample(texts, min(5, len(texts)))
+    ctx.status(f"正在生成评论与回复: {video_title}")
+    generated = generate_interaction(*model, course_title, video_title, sample)
+    fields = []
+    if need_comment:
+        fields.append({
+            "key": "comment",
+            "label": "课程评论（约100字）",
+            "type": "text",
+            "value": generated["comment"],
+        })
+    if need_reply:
+        fields.append({
+            "key": "reply",
+            "label": "对第一条评论的回复（约20字）",
+            "type": "text",
+            "value": generated["reply"],
+        })
+    context = [f"参考评论 {i + 1}：{text}" for i, text in enumerate(sample)]
+    ctx.log(f"模型已生成 {video_title} 的互动内容，等待用户核验")
+    response = broker.ask(
+        "interaction", f"评论与回复：{video_title}", fields, context)
+    if not response or response.get("action") == "skip":
+        ctx.log(f"用户跳过互动任务: {group.get('header')}")
+        return False
+    reviewed = _reviewed_fields(fields, response)
+    values = {str(field["key"]): str(field.get("value") or "").strip()
+              for field in reviewed}
+    if need_comment:
+        if not values.get("comment"):
+            raise RuntimeError("评论内容为空")
+        post_comment(driver, values["comment"])
+    if need_reply:
+        if not values.get("reply"):
+            raise RuntimeError("回复内容为空")
+        post_reply(driver, values["reply"])
+    ctx.log(f"评论与回复已提交: {video_title}")
+    return True
+
+
+def run_qa(ctx: PluginContext, driver,
+           courses: list[tuple[str, str]]) -> None:
+    api_url = str(
+        ctx.cfg("api_url", "https://api.deepseek.com")
+        or "https://api.deepseek.com").strip()
+    api_key = str(ctx.cfg("api_key") or "").strip()
+    model_id = str(
+        ctx.cfg("model_id", "deepseek-flash") or "deepseek-flash").strip()
+    if not (api_url and api_key and model_id):
+        raise RuntimeError("答题模式需要填写模型 API 地址、API Key 和模型 ID")
+    model = (api_url, api_key, model_id)
+    broker = ReviewBroker(ctx)
+    broker.clear()
+    try:
+        work: list[tuple[tuple[str, str], str, dict | str]] = []
+        for course in courses:
+            course_url, cid = course
+            driver.get(course_url)
+            title = normalize_title(course_data(driver, cid).get("title")) or cid
+            groups = collect_task_groups(driver)
+            for group in groups:
+                for item in group.get("items", []):
+                    if (item.get("icon", "").startswith(TASK_TEST_ICON_PREFIX)
+                            and "尚未提交" in item.get("tags", [])):
+                        work.append((course, title, item["title"]))
+                if (task_group_has(group, "评论")
+                        or task_group_has(group, "回复")):
+                    work.append((course, title, group))
+
+        if not work:
+            ctx.progress(done=0, total=0)
+            ctx.status("没有待处理的测验或互动任务", done=True)
+            return
+        ctx.log(f"答题与互动任务共 {len(work)} 项")
+        done = 0
+        skipped = 0
+        for course, course_title, work_item in work:
+            course_url, _cid = course
+            driver.get(course_url)
+            try:
+                if isinstance(work_item, str):
+                    ctx.progress(
+                        done=done, total=len(work), course=course_title,
+                        title=work_item)
+                    succeeded = run_quiz_item(
+                        ctx, driver, broker, course_title, work_item, model)
+                else:
+                    ctx.progress(
+                        done=done, total=len(work), course=course_title,
+                        title=normalize_title(work_item.get("header")))
+                    succeeded = run_interaction_group(
+                        ctx, driver, broker, course_url, course_title,
+                        work_item, model)
+                done += int(bool(succeeded))
+                skipped += int(not succeeded)
+            except (LLMError, RuntimeError, WebDriverException) as exc:
+                skipped += 1
+                label = (work_item if isinstance(work_item, str)
+                         else work_item.get("header"))
+                ctx.log(f"任务失败: {label}: {exc}")
+            ctx.progress(done=done, total=len(work), course=course_title)
+        ctx.status(
+            f"答题与互动处理结束: 完成 {done}/{len(work)}，跳过或失败 {skipped}",
+            done=True)
+    finally:
+        broker.clear()
+
+
 def main() -> None:
     ctx = PluginContext()
     raw_urls = ctx.cfg("course_urls") or []
@@ -844,6 +1654,12 @@ def main() -> None:
         ctx.log("未配置统一认证账号(需在全局设置或插件配置中填写),退出")
         return
 
+    task_mode = str(ctx.cfg("task_mode", "study") or "study").strip().lower()
+    if task_mode not in {"study", "qa"}:
+        task_mode = "study"
+    if task_mode == "qa" and not str(ctx.cfg("api_key") or "").strip():
+        ctx.log("答题与互动模式需要先在插件配置中填写模型 API Key,退出")
+        return
     speedup = bounded_float(ctx.cfg("speedup", 3), 3.0, 1.0, 3.0)
     tolerance = bounded_float(ctx.cfg("completion_tolerance", 3), 3.0, 0.0, 30.0)
     worker_count = positive_int(ctx.cfg("workers", 2), 2)
@@ -855,6 +1671,10 @@ def main() -> None:
     try:
         first_url, first_cid = courses[0]
         ensure_authenticated(ctx, driver, first_url, first_cid)
+        if task_mode == "qa":
+            ctx.log("开始答题与互动任务")
+            run_qa(ctx, driver, courses)
+            return
         jobs = discover_course_jobs(ctx, driver, courses)
         if not jobs:
             ctx.progress(done=0, total=0)

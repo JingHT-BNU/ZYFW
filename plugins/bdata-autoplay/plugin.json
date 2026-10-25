@@ -1,10 +1,19 @@
 {
   "id": "bdata-autoplay",
   "name": "师道云刷课",
-  "version": "1.4.0",
-  "description": "登录北师大统一身份认证，从任务进度窗口解析必修视频，多浏览器进程并行播放；完成状态以页面服务器观看时长与视频总时长比较为准；本地播放结束但服务器未满时自动重播；服务器倍速上限按 3 倍保守配置。",
+  "version": "2.0.0",
+  "description": "支持师道云刷课与答题互动：可并行播放必修视频，也可调用兼容 OpenAI Chat 接口的模型生成测验答案、课程评论和回复，并在用户确认后提交。",
   "entry": "plugin.py",
+  "config_ui": "ui.html",
   "config_schema": [
+    {
+      "key": "task_mode",
+      "label": "任务类型",
+      "type": "choice",
+      "default": "study",
+      "choices": ["study", "qa"],
+      "choice_labels": ["刷课", "答题与互动"]
+    },
     {
       "key": "course_urls",
       "label": "课程链接",
@@ -63,6 +72,24 @@
       "label": "统一认证密码(留空用全局)",
       "type": "password",
       "default": ""
+    },
+    {
+      "key": "api_url",
+      "label": "模型 API 地址",
+      "type": "string",
+      "default": "https://api.deepseek.com"
+    },
+    {
+      "key": "api_key",
+      "label": "模型 API Key",
+      "type": "password",
+      "default": ""
+    },
+    {
+      "key": "model_id",
+      "label": "模型 ID",
+      "type": "string",
+      "default": "deepseek-flash"
     }
   ]
 }

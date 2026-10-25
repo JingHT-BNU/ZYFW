@@ -304,7 +304,9 @@ html, body, #app {
 .zy-field > label { font-size: 12px; color: var(--zyfw-text-secondary); }
 .zy-config select,
 .zy-config input[type="text"],
-.zy-config input[type="number"] {
+.zy-config input[type="number"],
+.zy-config input[type="password"],
+.zy-config textarea {
   height: 32px;
   padding: 0 10px;
   border: 1px solid var(--zyfw-border);
@@ -315,9 +317,39 @@ html, body, #app {
   min-width: 120px;
   outline: none;
 }
+.zy-config textarea {
+  height: auto;
+  min-height: 76px;
+  padding: 8px 10px;
+  resize: vertical;
+  line-height: 1.55;
+}
 .zy-config select:focus,
-.zy-config input:focus { border-color: var(--zyfw-accent); }
+.zy-config input:focus,
+.zy-config textarea:focus { border-color: var(--zyfw-accent); }
 .zy-config input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--zyfw-accent); cursor: pointer; }
+.zy-config .bdata-wide { flex: 1 1 620px; }
+.zy-config .bdata-wide textarea,
+.zy-config .bdata-wide input { width: 100%; box-sizing: border-box; }
+.zy-review-fields { display: flex; flex-direction: column; gap: 12px; margin: 14px 0; }
+.zy-review-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--zyfw-border);
+  border-radius: 8px;
+  background: var(--zyfw-log-bg);
+}
+.zy-review-field > label { font-weight: 600; line-height: 1.55; }
+.zy-review-options { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.zy-review-options label { white-space: normal; }
+.zy-review-context { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
+.zy-review-context-line {
+  font-size: 12px;
+  color: var(--zyfw-text-secondary);
+  line-height: 1.5;
+}
 .zy-btn {
   height: 32px;
   padding: 0 16px;
