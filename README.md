@@ -1,6 +1,6 @@
 # ZYFW 大学生活工具集
 
-ZYFW 是一款面向北师大校园学习场景的 Windows 桌面工具箱。应用采用本地服务与 Edge 浏览器窗口运行，提供教务抢课、SPOC 学习和师道云学习辅助插件。
+ZYFW 是一款面向北师大校园学习场景的 Windows 桌面工具箱。应用使用本地服务，并在独立浏览器窗口中运行，提供教务抢课、SPOC 学习和师道云学习辅助插件。
 
 所有账号配置、日志和插件缓存均保存在本机 `data/` 目录，不会随项目上传。
 
@@ -16,9 +16,9 @@ ZYFW 是一款面向北师大校园学习场景的 Windows 桌面工具箱。应
 
 - Windows 10 或 Windows 11
 - Python 3.10 或更高版本
-- Microsoft Edge、Mozilla Firefox 或 Chromium 中的至少一种
-- 与所选浏览器版本匹配的 WebDriver
-- 由于中国大陆用户难以下载 Google Chrome WebDriver，故推荐使用 Edge
+- Microsoft Edge、Mozilla Firefox、Google Chrome 或 Chromium 等现代浏览器中的至少一种
+- 使用浏览器自动化插件时，需要与所选插件浏览器版本匹配的 WebDriver
+- 推荐使用 Edge，但 Edge 不是运行主窗口的必要条件
 
 ## 快速开始
 
@@ -39,7 +39,7 @@ python -m venv .venv
 
 ### 3. 安装 WebDriver
 
-插件运行浏览器可在全局设置中切换。应用主窗口仍使用 Microsoft Edge。
+插件运行浏览器可在全局设置中切换，与应用主窗口使用的浏览器相互独立。主窗口优先使用 Microsoft Edge 应用模式；未安装 Edge 时，自动使用系统默认浏览器。
 
 选择一种浏览器并安装对应驱动：
 
@@ -72,7 +72,7 @@ python -m venv .venv
 
 ### 4. 启动工具箱
 
-双击项目根目录中的 `start.bat`。程序会自动选择可用端口并打开独立的 Edge 应用窗口。
+双击项目根目录中的 `start.bat`。程序会自动选择可用端口，优先打开独立的 Edge 应用窗口；未安装 Edge 时，回退到系统默认浏览器。
 
 也可以使用命令行启动：
 
