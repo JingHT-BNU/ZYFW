@@ -1,7 +1,7 @@
 {
   "id": "bdata-autoplay",
   "name": "师道云刷课",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "支持师道云刷课与答题互动：可并行播放必修视频，也可调用兼容 OpenAI Chat 接口的模型生成测验答案、课程评论和回复，并在用户确认后提交；课程量表可按固定策略或正态分布自动选择。",
   "entry": "plugin.py",
   "config_ui": "ui.html",

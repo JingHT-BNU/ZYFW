@@ -1047,31 +1047,89 @@ def post_comment(driver, text: str) -> None:
     time.sleep(1.5)
 
 
-def post_reply(driver, text: str) -> None:
-    opened = driver.execute_script(
-        """
-        const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
-        const first = document.querySelector('#commentBarScroll > ul > li');
-        if (!first) return false;
-        first.scrollIntoView({block: 'center'});
-        const button = Array.from(first.querySelectorAll('button'))
-            .find(el => norm(el.innerText) === '回复');
-        if (!button) return false;
-        button.click();
-        return true;
-        """
-    )
-    if not opened:
+def _first_comment_element(driver):
+    comments = driver.find_elements(
+        By.XPATH, '//*[@id="commentBarScroll"]/ul/li[1]')
+    if not comments:
+        raise RuntimeError("未找到第一条评论")
+    return comments[0]
+
+
+def _click_scoped_live_button(driver, scope, relative_xpath: str,
+                              text: str) -> bool:
+    buttons = scope.find_elements(By.XPATH, relative_xpath)
+    if not buttons:
+        buttons = scope.find_elements(
+            By.XPATH,
+            f'.//button[normalize-space(.)="{text}"]',
+        )
+    for button in buttons:
+        if not button.is_displayed():
+            continue
+        try:
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center'});", button)
+            button.click()
+        except WebDriverException:
+            try:
+                driver.execute_script("arguments[0].click();", button)
+            except WebDriverException:
+                continue
+        return True
+    return False
+
+
+def _open_first_comment_reply(driver) -> None:
+    first = _first_comment_element(driver)
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block:'center'});", first)
+    if not _click_scoped_live_button(
+            driver, first,
+            './div/div/div/div[3]/button[2]', "回复"):
         raise RuntimeError("未找到第一条评论的回复按钮")
+
+
+def _reply_editor(driver):
     deadline = time.time() + 5
     while time.time() < deadline:
-        if _visible_editor(driver) is not None:
-            break
+        first = _first_comment_element(driver)
+        editors = first.find_elements(
+            By.XPATH,
+            './div/div/div/div[4]/div[2]/li/div/div/div[1]/textarea',
+        )
+        if not editors:
+            editors = first.find_elements(By.XPATH, './/textarea')
+        for editor in editors:
+            if editor.is_displayed():
+                return editor
         time.sleep(0.2)
-    _enter_editor_text(driver, text)
-    if not _click_visible_button(driver, "确认"):
+    raise RuntimeError("第一条评论的回复输入框未出现")
+
+
+def _enter_reply_text(driver, text: str) -> None:
+    editor = _reply_editor(driver)
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block:'center'});"
+        "arguments[0].focus();", editor)
+    editor.clear()
+    editor.send_keys(text)
+    if str(editor.get_attribute("value") or "").strip() != text.strip():
+        raise RuntimeError("回复文字未写入第一条评论的回复框")
+
+
+def _submit_first_comment_reply(driver) -> None:
+    first = _first_comment_element(driver)
+    if not _click_scoped_live_button(
+            driver, first,
+            './div/div/div/div[4]/div[2]/li/div/button[2]', "确认"):
         raise RuntimeError("未找到回复确认按钮")
     time.sleep(1.5)
+
+
+def post_reply(driver, text: str) -> None:
+    _open_first_comment_reply(driver)
+    _enter_reply_text(driver, text)
+    _submit_first_comment_reply(driver)
 
 
 def _login(ctx: PluginContext, driver, course_url: str) -> None:
