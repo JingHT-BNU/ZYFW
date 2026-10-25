@@ -13,6 +13,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 PLUGINS_DIR = _ROOT / "plugins"
 USER_PLUGINS_DIR = PLUGINS_DIR / "installed"
 ALLOWED_ENTRY = {"plugin.py"}
+MAX_ZIP_MEMBERS = 500
+MAX_ZIP_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 
 VALID_TYPES = {"string", "password", "number", "bool", "choice", "string-list", "course-table", "specialty"}
 BUILTIN_IDS = {"course-grab", "spoc-autoplay"}
@@ -22,15 +24,23 @@ class PluginError(Exception):
     pass
 
 
+def _validate_plugin_id(plugin_id: object) -> str:
+    if (not isinstance(plugin_id, str) or not plugin_id or len(plugin_id) > 64
+            or not all(c.isalnum() or c in "-_" for c in plugin_id)):
+        raise PluginError(f"非法插件 id: {plugin_id!r}")
+    return plugin_id
+
+
 def _validate_manifest(manifest: Any, source: str) -> dict:
     if not isinstance(manifest, dict):
         raise PluginError(f"{source}: plugin.json 必须是 JSON 对象")
     for key in ("id", "name", "version", "entry"):
         if not manifest.get(key):
             raise PluginError(f"{source}: plugin.json 缺少必填字段 {key}")
-    pid = manifest["id"]
-    if not isinstance(pid, str) or not pid or len(pid) > 64 or not all(c.isalnum() or c in "-_" for c in pid):
-        raise PluginError(f"{source}: 非法插件 id: {pid!r}")
+    try:
+        _validate_plugin_id(manifest["id"])
+    except PluginError as e:
+        raise PluginError(f"{source}: {e}") from e
     if Path(manifest["entry"]).name != manifest["entry"] or Path(manifest["entry"]).suffix != ".py":
         raise entry_err(source)
     schema = manifest.get("config_schema", [])
@@ -147,23 +157,35 @@ class PluginManager:
             try:
                 try:
                     with zipfile.ZipFile(zip_path) as zf:
-                        names = zf.namelist()
-                        for n in names:
-                            _check_zip_member(n)
+                        infos = zf.infolist()
+                        if len(infos) > MAX_ZIP_MEMBERS:
+                            raise PluginError(f"插件包文件过多(上限 {MAX_ZIP_MEMBERS})")
+                        total_size = sum(info.file_size for info in infos)
+                        if total_size > MAX_ZIP_UNCOMPRESSED_BYTES:
+                            raise PluginError("插件包解压后过大(上限 50 MB)")
+                        for info in infos:
+                            _check_zip_member(info.filename)
                         zf.extractall(work)
-                    # 兼容 zip 内含单层目录
-                    entries = [e for e in work.iterdir() if e.is_dir() and (e / "plugin.json").exists()]
-                    dirs_with_manifest = entries
-                    if not dirs_with_manifest:
-                        raise PluginError("zip 中未找到 plugin.json")
-                    if len(dirs_with_manifest) > 1:
-                        raise PluginError("zip 中发现多个 plugin.json,无法确定插件根目录")
-                    src = dirs_with_manifest[0]
+                    # 兼容 plugin.json 位于根目录或单层目录内两种 zip 结构。
+                    if (work / "plugin.json").exists():
+                        src = work
+                    else:
+                        dirs_with_manifest = [
+                            e for e in work.iterdir()
+                            if e.is_dir() and (e / "plugin.json").exists()
+                        ]
+                        if not dirs_with_manifest:
+                            raise PluginError("zip 中未找到 plugin.json")
+                        if len(dirs_with_manifest) > 1:
+                            raise PluginError("zip 中发现多个 plugin.json,无法确定插件根目录")
+                        src = dirs_with_manifest[0]
                     manifest = self._load_manifest(src)
                     if not manifest:
                         raise PluginError("plugin.json 校验失败")
+                    if manifest["id"] in BUILTIN_IDS:
+                        raise PluginError(f"插件 id {manifest['id']} 与内置插件冲突")
                     dest = USER_PLUGINS_DIR / manifest["id"]
-                    if dest.exists():
+                    if dest.exists() or (PLUGINS_DIR / manifest["id"]).exists():
                         raise PluginError(f"插件 {manifest['id']} 已安装,请先卸载或直接更新配置")
                     shutil.move(str(src), str(dest))
                     return {"id": manifest["id"], "name": manifest["name"], "version": manifest["version"]}
@@ -175,6 +197,7 @@ class PluginManager:
     def uninstall(self, plugin_id: str) -> None:
         _ensure_user_plugins_dir()
         with self._lock:
+            _validate_plugin_id(plugin_id)
             if plugin_id in BUILTIN_IDS:
                 raise PluginError("内置插件不可删除")
             d = USER_PLUGINS_DIR / plugin_id
@@ -185,6 +208,7 @@ class PluginManager:
             shutil.rmtree(d)
 
     def plugin_data_dir(self, plugin_id: str) -> Path:
+        _validate_plugin_id(plugin_id)
         d = DATA_DIR_ROOT / plugin_id
         d.mkdir(parents=True, exist_ok=True)
         return d

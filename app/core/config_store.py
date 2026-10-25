@@ -6,6 +6,7 @@ import ctypes
 from ctypes import wintypes
 import json
 import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,15 @@ DATA_DIR = _ROOT / "data"
 _SECRET_KEYS = {"password", "secret", "token"}
 _DPAPI_PREFIX = "dpapi:"
 _CRYPTPROTECT_UI_FORBIDDEN = 0x1
+_PATH_LOCKS: dict[Path, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _path_lock(path: Path) -> threading.RLock:
+    """Share one lock across JsonStore instances targeting the same file."""
+    key = path.resolve()
+    with _PATH_LOCKS_GUARD:
+        return _PATH_LOCKS.setdefault(key, threading.RLock())
 
 
 class _DATA_BLOB(ctypes.Structure):
@@ -101,7 +111,7 @@ def _decrypt_secrets(obj: Any) -> Any:
                 # 用户在设置页重新输入即可。保存时空值不会触发再加密。
                 try:
                     out[k] = dpapi_unprotect(v)
-                except OSError:
+                except (OSError, ValueError, UnicodeDecodeError):
                     out[k] = ""
             else:
                 out[k] = _decrypt_secrets(v)
@@ -128,15 +138,18 @@ class JsonStore:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = _path_lock(path)
 
     def _read_raw(self) -> dict:
         if not self.path.exists():
             return {}
         try:
             with open(self.path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("配置根节点必须是 JSON 对象")
+            return data
+        except (json.JSONDecodeError, OSError, ValueError):
             backup = self.path.with_suffix(".corrupt.json")
             try:
                 os.replace(self.path, backup)
@@ -145,10 +158,26 @@ class JsonStore:
             return {}
 
     def _write_raw(self, data: dict) -> None:
-        tmp = self.path.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, self.path)
+        # 同进程内多个 PluginConfigStore 实例可能并发保存同一路径。唯一临时
+        # 文件名可避免它们互相覆盖尚未替换的临时文件。
+        tmp_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", dir=self.path.parent,
+                prefix=f".{self.path.name}.", suffix=".tmp", delete=False,
+            ) as f:
+                tmp_path = f.name
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.path)
+            tmp_path = None
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def load(self) -> dict:
         with self._lock:
@@ -189,6 +218,8 @@ GLOBAL_DEFAULTS: dict = {
 def _migrate_legacy_accounts(data: dict) -> dict:
     """旧版双账号(zyfw_account/spoc_account)合并为统一身份认证 account。"""
     if "account" in data:
+        if not isinstance(data["account"], dict):
+            data["account"] = {}
         return data
     zyfw = data.pop("zyfw_account", {}) or {}
     spoc = data.pop("spoc_account", {}) or {}
@@ -212,6 +243,8 @@ class GlobalConfig:
     def get(self) -> dict:
         data = self.store.load()
         data = _migrate_legacy_accounts(data)
+        if not isinstance(data.get("general"), dict):
+            data["general"] = {}
         merged = json.loads(json.dumps(GLOBAL_DEFAULTS))
         _deep_update(merged, data)
         return merged

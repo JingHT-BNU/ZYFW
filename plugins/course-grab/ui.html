@@ -115,6 +115,8 @@
   var catalog = null;
   // 已保存的专业 {level:{v,t},...}
   var savedSp = null;
+  // 课程抓取任务运行期间禁用按钮; 未运行时由点击处理器校验选择完整性
+  var coursesRunning = false;
 
   function showMsg(text, cls) {
     var el = $("cg-msg");
@@ -171,8 +173,10 @@
   }
 
   function syncLoadBtn() {
-    $("cg-load").disabled = !($("cg-level").value && $("cg-grade").value
-      && $("cg-dept").value && $("cg-major").value);
+    // 选择完整性由点击时统一校验。这里只反映任务运行态, 避免某次 change
+    // 事件缺失或界面重挂载后按钮永久停留在 disabled。
+    var btn = $("cg-load");
+    if (btn) btn.disabled = coursesRunning;
   }
 
   function specialtyNow() {
@@ -252,18 +256,22 @@
   }
 
   async function fetchCourses() {
-    // 拉取当前所选专业的课程缓存; 成功渲染表格并返回 true, 未缓存/参数不全返回 false
+    // true=成功, false=未缓存/参数不全, null=请求期间选择已变化
+    var requestId = ++courseCacheRequest;
     var sp = specialtyNow();
     if (!(sp.level.v && sp.grade.v && sp.dept.v && sp.major.v)) return false;
     try {
-      cache = await Z.api("plugins/course-grab/major-courses?level="
+      var data = await Z.api("plugins/course-grab/major-courses?level="
         + encodeURIComponent(sp.level.v) + "&grade=" + encodeURIComponent(sp.grade.v)
         + "&dept=" + encodeURIComponent(sp.dept.v) + "&major=" + encodeURIComponent(sp.major.v));
+      if (requestId !== courseCacheRequest) return null;
+      cache = data;
       $("cg-courses-wrap").hidden = false;
       $("cg-courses-empty").hidden = true;
       renderCourses();
       return true;
     } catch (e) {
+      if (requestId !== courseCacheRequest) return null;
       cache = null;
       $("cg-courses-wrap").hidden = true;
       return false;
@@ -272,7 +280,7 @@
 
   async function loadCourses() {
     // 用户可见的加载: 未缓存时提示点「开始专业课程抓取」
-    if (!(await fetchCourses())) {
+    if ((await fetchCourses()) === false) {
       var empty = $("cg-courses-empty");
       empty.hidden = false;
       empty.className = "zy-alert zy-warn";
@@ -369,6 +377,7 @@
       for (var i = evs.length - 1; i >= 0; i--) {
         if (evs[i].type === "plugin_status" && evs[i].status === "running") { start = i; break; }
       }
+      if (start < 0) return null;
       var last = null;
       for (var j = start + 1; j < evs.length; j++) {
         if (evs[j].type === "progress") last = evs[j];
@@ -505,9 +514,12 @@
   // ---------------- 专业课程抓取: 选好专业点按钮触发, 失败可检测可重试 ----------------
 
   var coursesTimer = null;   // 课程抓取监控轮询句柄
+  var courseCacheRequest = 0; // 丢弃切换专业后迟到的旧缓存响应
 
   function stopCoursesWatch() {
     if (coursesTimer) { clearInterval(coursesTimer); coursesTimer = null; }
+    coursesRunning = false;
+    syncLoadBtn();
   }
 
   function renderCoursesProgress(prog) {
@@ -534,6 +546,7 @@
     var btn = $("cg-load");
     var started = Date.now();
     var everRunning = false;
+    coursesRunning = true;
     btn.disabled = true;
     coursesTimer = setInterval(async function () {
       // 配置界面已切换/卸载时停止监控
@@ -549,32 +562,36 @@
             if (pt) pt.textContent = "抓取中…已用 "
               + Math.round((Date.now() - started) / 1000) + " 秒";
           }
-        } else if (await fetchCourses()) {
-          // 任务结束且课程缓存就绪 → 成功, 自动列出课程
-          stopCoursesWatch();
-          btn.disabled = false;
-          hideCoursesProgress();
-          Z.message("success", "专业课程抓取完成,已在下方列出,请勾选要抢的课程");
-        } else if (!st.running && (everRunning || Date.now() - started > 8000)) {
-          // 抓取进程已结束但缓存未生成 → 失败, 允许重试
-          stopCoursesWatch();
-          btn.disabled = false;
-          hideCoursesProgress();
-          var empty = $("cg-courses-empty");
-          empty.hidden = false;
-          empty.className = "zy-alert zy-error";
-          empty.textContent = "抓取已结束但课程缓存未生成(原因见下方运行日志),可点击「开始专业课程抓取」重试";
-          Z.message("error", "专业课程抓取失败,请查看运行日志后重试");
-        } else if (st.progress && st.progress.stage
-            && st.progress.stage !== "courses") {
-          // 占用进程槽位的是其他任务(如目录抓取/抢课), 不属于课程抓取监控范围
-          stopCoursesWatch();
-          btn.disabled = false;
-          hideCoursesProgress();
-        } else if (Date.now() - started > 30 * 60 * 1000) {
-          stopCoursesWatch();
-          btn.disabled = false;
-          hideCoursesProgress();
+        } else {
+          var cached = await fetchCourses();
+          if (cached === null) return;   // 选择已变化, 等下一轮重新判断
+          if (cached) {
+            // 任务结束且课程缓存就绪 → 成功, 自动列出课程
+            stopCoursesWatch();
+            btn.disabled = false;
+            hideCoursesProgress();
+            Z.message("success", "专业课程抓取完成,已在下方列出,请勾选要抢的课程");
+          } else if (everRunning || Date.now() - started > 8000) {
+            // 抓取进程已结束但缓存未生成 → 失败, 允许重试
+            stopCoursesWatch();
+            btn.disabled = false;
+            hideCoursesProgress();
+            var empty = $("cg-courses-empty");
+            empty.hidden = false;
+            empty.className = "zy-alert zy-error";
+            empty.textContent = "抓取已结束但课程缓存未生成(原因见下方运行日志),可点击「开始专业课程抓取」重试";
+            Z.message("error", "专业课程抓取失败,请查看运行日志后重试");
+          } else if (st.progress && st.progress.stage
+              && st.progress.stage !== "courses") {
+            // 占用进程槽位的是其他任务(如目录抓取/抢课), 不属于课程抓取监控范围
+            stopCoursesWatch();
+            btn.disabled = false;
+            hideCoursesProgress();
+          } else if (Date.now() - started > 30 * 60 * 1000) {
+            stopCoursesWatch();
+            btn.disabled = false;
+            hideCoursesProgress();
+          }
         }
       } catch (e) {
         // 单轮查询失败(网络抖动等)忽略, 下一轮再试
@@ -659,6 +676,10 @@
     // 回显已保存专业后自动加载其课程缓存(如有)
     maybeAutoLoad();
 
+    ["cg-level", "cg-grade", "cg-dept", "cg-major"].forEach(function (id) {
+      // input 与 change 双保险: 某些浏览器/自动化流程可能只触发其中之一
+      $(id).addEventListener("input", syncLoadBtn);
+    });
     $("cg-level").addEventListener("change", function () {
       fillSelect($("cg-grade"), nodeAt([$("cg-level").value]));
       fillSelect($("cg-dept"), null);

@@ -244,6 +244,22 @@ def _elem_int(browser, xpath: str) -> int:
         return 1
 
 
+def _dialog_candidates(dialog_rows, class_nums: list[str]) -> list[tuple[list, int]]:
+    """Return matching class rows and their advertised free-seat counts."""
+    candidates = []
+    for row in dialog_rows:
+        cells = row.find_elements(By.TAG_NAME, "td")
+        if not cells or len(cells) <= 11:
+            continue
+        class_num = (cells[0].text or "").strip()
+        if class_nums and class_num not in class_nums:
+            continue
+        raw_free = (cells[6].text or "").strip()
+        free = int(raw_free) if raw_free.isdigit() else 0
+        candidates.append((cells, free))
+    return candidates
+
+
 def read_course_table(browser) -> tuple[list[dict], int, int]:
     """读取 frmReport 当前页课程表格, 合并子课程行。
 
@@ -557,7 +573,7 @@ def try_grab_course(ctx, browser, code: str, class_nums: list[str], attempt: int
     rows = find_strict(browser, KEYWORDS_XPATH).find_elements(By.TAG_NAME, "tr")
     for row in rows:
         cells = row.find_elements(By.TAG_NAME, "td")
-        if not cells or code not in cells[1].text:
+        if len(cells) <= 13 or code not in cells[1].text:
             continue
         cells[13].click()
         sleepran(1)
@@ -566,21 +582,10 @@ def try_grab_course(ctx, browser, code: str, class_nums: list[str], attempt: int
         browser.switch_to.frame(find_strict(browser, '//*[@id="dialog-frame"]'))
         browser.switch_to.frame(find_strict(browser, REPORT_FRAME_XPATH))
         dialog_rows = find_strict(browser, KEYWORDS_XPATH).find_elements(By.TAG_NAME, "tr")
-        for d_row in dialog_rows:
-            d_cells = d_row.find_elements(By.TAG_NAME, "td")
-            if not d_cells or len(d_cells) <= 11:
-                continue
-            if class_nums and d_cells[0].text not in class_nums:
-                continue
-            if not d_cells[6].text.strip().isdigit() or not int(d_cells[6].text):
-                # 无名额,返回列表继续轮询
-                browser.switch_to.parent_frame()
-                find_strict(browser, '//*[@id="btnReturn"]').click()
-                ctx.status(
-                    f"{code} 班级 {d_cells[0].text} 无名额",
-                    course=code, class_num=d_cells[0].text, free=0,
-                )
-                return False
+        candidates = _dialog_candidates(dialog_rows, class_nums)
+        available = next((cells for cells, free in candidates if free > 0), None)
+        if available is not None:
+            d_cells = available
             d_cells[11].click()
             sleepran(1)
             browser.switch_to.parent_frame()
@@ -591,10 +596,13 @@ def try_grab_course(ctx, browser, code: str, class_nums: list[str], attempt: int
             )
             time.sleep(2)
             return True
-        # 该课程所有候选班级都不在弹窗中
+        # 所有候选班级都无名额: 关闭弹窗, 等下一轮继续检查
         browser.switch_to.parent_frame()
         find_strict(browser, '//*[@id="btnReturn"]').click()
-        ctx.status(f"{code} 候选班级均未找到", course=code)
+        if candidates:
+            ctx.status(f"{code} 候选班级均无名额", course=code, free=0)
+        else:
+            ctx.status(f"{code} 候选班级均未找到", course=code)
         return False
     ctx.status(f"{code} 未在列表中找到", course=code)
     return False
@@ -614,18 +622,19 @@ def run_auto_mode(ctx, courses: dict, poll_interval: float) -> None:
     m = 0   # 连续异常次数
     n = 1   # 轮询轮次
     browser = None
-    while True:
+    pending = dict(courses)
+    while pending:
         try:
             if browser is None:
                 browser = make_driver(ctx, headless=bool(ctx.cfg("headless", True)))
                 login(ctx, browser)
-            done_any = False
-            for code, class_nums in courses.items():
+            for code, class_nums in list(pending.items()):
                 if try_grab_course(ctx, browser, code, class_nums, attempt=n):
-                    done_any = True
-            if done_any:
+                    pending.pop(code, None)
+                    ctx.status(f"{code} 已完成,剩余 {len(pending)} 门", done=not pending)
+            if not pending:
                 ctx.status("抢课流程完成", done=True)
-                return
+                break
             n += 1
             ctx.progress(round=n, fatal=m, polled=n)
         except Exception as e:
@@ -642,6 +651,25 @@ def run_auto_mode(ctx, courses: dict, poll_interval: float) -> None:
         time.sleep(poll_interval * (random.random() / 2 + 1))
 
 
+def _normalize_courses(raw) -> dict[str, list[str]]:
+    """Normalize legacy string/list class selections into string lists."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for raw_code, raw_classes in raw.items():
+        code = str(raw_code or "").strip().upper()
+        if not code:
+            continue
+        if isinstance(raw_classes, str):
+            values = re.split(r"[,，\s]+", raw_classes)
+        elif isinstance(raw_classes, (list, tuple)):
+            values = [str(v) for v in raw_classes]
+        else:
+            values = []
+        out[code] = [v.strip() for v in values if v.strip()]
+    return out
+
+
 def main() -> None:
     ctx = PluginContext()
 
@@ -655,9 +683,13 @@ def main() -> None:
         return
 
     mode = ctx.cfg("mode", "auto")
-    interval = float(ctx.cfg("poll_interval", 2))
+    try:
+        interval = float(ctx.cfg("poll_interval", 2))
+    except (TypeError, ValueError):
+        interval = 2.0
+    interval = min(60.0, max(0.5, interval))
 
-    courses = ctx.cfg("courses") or {}
+    courses = _normalize_courses(ctx.cfg("courses"))
     if not courses:
         ctx.log("未配置任何课程,退出(抓取课程列表请在配置界面选好专业后点「开始专业课程抓取」)")
         return

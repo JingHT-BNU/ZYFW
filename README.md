@@ -97,6 +97,7 @@ python app\selftest_runner.py  # 子进程启停与事件采集
 python app\selftest_api.py     # REST/WebSocket 集成
 python app\selftest_catalog.py # 专业目录/课程列表端点(缓存读取与任务守卫)
 python app\selftest_catalog_ckpt.py # 目录抓取检查点/断点续抓/自动重启逻辑(离线桩)
+python app\selftest_plugins.py # 抢课候选/自动轮询与 SPOC 去重/参数校验(离线桩)
 node app\selftest_ui_grab_progress.js # 配置界面抓取进度条行为(离线 DOM 桩, 需 Node)
 python app\selftest_ui.py      # 真实浏览器渲染冒烟(需先启动服务)
 python app\selftest_ui20.py    # SPOC 2.0 配置表单走查(需先启动服务)

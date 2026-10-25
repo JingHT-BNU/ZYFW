@@ -100,6 +100,8 @@
     } else if (msg.type === "plugin_status") {
       updatePluginStatus(pid, msg.status);
       if (msg.status === "stopped" || msg.status === "crashed" || msg.status === "exited") {
+        // 终态后不再保留上一轮进度, 否则仪表盘会永久显示旧进度条。
+        delete state.progress[pid];
         pushLog(pid, "—— 进程结束 (" + msg.status + (msg.exit_code !== undefined && msg.exit_code !== null ? ", exit " + msg.exit_code : "") + ") ——", "sysinfo");
       }
     } else if (msg.type === "plugin_installed" || msg.type === "plugin_uninstalled") {
@@ -109,7 +111,10 @@
 
   function updatePluginStatus(pid, status) {
     const p = state.plugins.find((x) => x.id === pid);
-    if (p) { p.status = status; p.running = status === "running"; }
+    if (p) {
+      p.status = status;
+      p.running = status === "running" || status === "starting" || status === "stopping";
+    }
   }
 
   // ---------------- 主题 ----------------
@@ -135,6 +140,10 @@
   async function loadPlugins() {
     const data = await api("/plugins");
     state.plugins = data.plugins;
+    for (const p of state.plugins) {
+      if (p.progress) state.progress[p.id] = p.progress;
+      else if (!p.running) delete state.progress[p.id];
+    }
   }
 
   async function loadGlobal() {
@@ -142,20 +151,25 @@
     state.globalConfig = data.config;
   }
 
+  let detailRequest = 0;
+
   async function openDetail(id) {
     const p = state.plugins.find((x) => x.id === id);
     if (!p) return;
+    const requestId = ++detailRequest;
     state.detailId = id;
     state.page = "detail";
     state.detailSchema = p.config_schema || [];
     state.detailConfig = null;
     state.uiHtml = null;
     const data = await api("/plugins/" + id + "/config");
+    if (requestId !== detailRequest || state.page !== "detail") return;
     if (p.config_ui) {
       // 自定义配置界面插件: 配置对象原样交给界面脚本, 不做编辑模型加工
       state.detailConfig = data.config;
       try {
         const ui = await api("/plugins/" + id + "/ui");
+        if (requestId !== detailRequest || state.page !== "detail") return;
         state.uiHtml = ui.html;
       } catch (e) {
         // 界面加载失败时回退到 schema 简易表单, 需要编辑模型
@@ -168,6 +182,7 @@
     }
     if (!state.logs[id]) {
       const logs = await api("/plugins/" + id + "/logs?limit=300");
+      if (requestId !== detailRequest) return;
       state.logs[id] = logs.events
         .filter((e) => e.type === "log")
         .map((e) => ({ line: e.line, cls: "" }));

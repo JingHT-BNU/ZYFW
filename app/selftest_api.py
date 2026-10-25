@@ -1,5 +1,6 @@
 """API 层集成测试:配置读写、密码掩码保持、插件启停、WebSocket。"""
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -8,18 +9,13 @@ sys.path.insert(0, str(ROOT))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import app.api as api_module  # noqa: E402
+from app.core import config_store, plugin_manager  # noqa: E402
 from app.main import create_app  # noqa: E402
-from app.core.config_store import GlobalConfig  # noqa: E402
-
-# 先清理自测残留的全局配置
-g = GlobalConfig()
-(g.store.path).unlink(missing_ok=True)
-
-app = create_app()
-client = TestClient(app)
+from app.core.config_store import GlobalConfig, JsonStore, PluginConfigStore  # noqa: E402
 
 
-def main() -> None:
+def _run(client: TestClient, g: GlobalConfig) -> None:
     # 1. 全局配置 PUT -> GET,密码回读打码
     r = client.put("/api/global", json={"config": {
         "account": {"username": "stu001", "password": "secret123"}}})
@@ -46,6 +42,7 @@ def main() -> None:
         "headless": True,
         "username": "",
         "password": "plugsecret",
+        "account": {"username": "plug", "password": "nested-secret"},
     }})
     assert r.status_code == 200, r.text
     r = client.get("/api/plugins/course-grab/config")
@@ -53,6 +50,17 @@ def main() -> None:
     assert body["schema"][0]["key"] == "mode"
     assert body["config"]["password"] == "******"
     assert body["config"]["courses"] == {"GEN06122": ["09", "10"]}
+    assert body["config"]["account"]["password"] == "******"
+
+    # 嵌套密码回传 ****** 时也必须保持原值, 不能存成字面占位符
+    r = client.put("/api/plugins/course-grab/config", json={"config": {
+        **body["config"], "account": {"username": "plug", "password": "******"},
+    }})
+    assert r.status_code == 200, r.text
+    assert PluginConfigStore("course-grab").get()["account"]["password"] == \
+        "nested-secret"
+    r = client.put("/api/plugins/course-grab/config", json={"config": []})
+    assert r.status_code == 422, r.status_code
     print("[ok] plugin config PUT/GET with schema")
 
     # 3. 启动插件(未配课程 → 插件应立刻退出而非报错)
@@ -82,6 +90,8 @@ def main() -> None:
     lines = [e.get("line", "") for e in r.json()["events"] if e["type"] == "log"]
     assert any("未配置任何课程" in ln for ln in lines), lines
     print("[ok] plugin start/stop lifecycle via API, logs captured")
+    r = client.get("/api/plugins/course-grab/logs?limit=999999")
+    assert r.status_code == 200, r.status_code
 
     # 4. WebSocket: hello 历史回放
     with client.websocket_connect("/api/ws") as ws:
@@ -91,6 +101,26 @@ def main() -> None:
     print(f"[ok] websocket hello, {len(hello['history'])} history events")
 
     print("ALL API TESTS PASSED")
+
+
+def main() -> None:
+    # 所有 API 配置与运行数据都隔离到临时目录, 不触碰用户真实凭据。
+    with tempfile.TemporaryDirectory(prefix="zyfw-selftest-api-") as td:
+        temp_data = Path(td)
+        old_data_dir = config_store.DATA_DIR
+        old_plugin_data = plugin_manager.DATA_DIR_ROOT
+        old_global = api_module.global_config
+        try:
+            config_store.DATA_DIR = temp_data
+            plugin_manager.DATA_DIR_ROOT = temp_data / "plugins"
+            api_module.global_config = GlobalConfig(
+                JsonStore(temp_data / "global.json"))
+            client = TestClient(create_app())
+            _run(client, api_module.global_config)
+        finally:
+            config_store.DATA_DIR = old_data_dir
+            plugin_manager.DATA_DIR_ROOT = old_plugin_data
+            api_module.global_config = old_global
 
 
 if __name__ == "__main__":

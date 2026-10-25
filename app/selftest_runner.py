@@ -98,9 +98,30 @@ def main() -> None:
         assert progress[-1]["done"] == 3 and progress[-1]["total"] == 3
         assert final_status["status"] == "exited", final_status
         assert final_status["exit_code"] == 0
+        child_events = [e for e in seen if e.get("type") in ("log", "progress")]
+        assert child_events, "未采集到子进程事件"
+        first_child = seen.index(child_events[0])
+        running_events = [
+            i for i, e in enumerate(seen)
+            if e.get("type") == "plugin_status" and e.get("status") == "running"
+        ]
+        assert running_events and running_events[0] < first_child, \
+            "running 状态必须先于首条子进程事件发布"
+        parsed = Runner._parse_line(
+            "selftest-dummy",
+            '{"__event__":"log","type":"progress","plugin":"spoofed","line":"x"}')
+        assert parsed["type"] == "log" and parsed["plugin"] == "selftest-dummy", parsed
         # 进程结束后 progress 清除, /api/plugins 不残留陈旧进度
         snap = runner.snapshot()
         assert snap["selftest-dummy"]["progress"] is None, snap["selftest-dummy"]
+        dummy_data = ROOT / "data" / ".selftest" / "dummy-data"
+        assert not list(dummy_data.glob(".runtime-*.json")), \
+            "进程结束后应删除含凭据的临时运行配置"
+        before_stop = len(seen)
+        runner.stop("selftest-dummy")
+        time.sleep(0.1)
+        assert len(seen) == before_stop, "停止已退出进程不得改写终态"
+        assert runner.snapshot()["selftest-dummy"]["status"] == "exited"
 
         print(f"events: {len(seen)}, logs: {len(logs)}, progress: {len(progress)}")
         print("RUNNER TEST PASSED")

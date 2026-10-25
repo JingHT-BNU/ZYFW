@@ -20,7 +20,6 @@ sys.path.insert(0, str(ROOT))
 from app.api import api_router, set_shutdown_callback  # noqa: E402
 
 from fastapi import FastAPI  # noqa: E402
-from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 WEB_DIR = ROOT / "app" / "web"

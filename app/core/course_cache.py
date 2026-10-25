@@ -33,14 +33,21 @@ def courses_file(level: str, grade: str, dept: str, major: str) -> Path:
 def load_catalog() -> dict | None:
     """读取专业目录缓存; 文件缺失或损坏返回 None(前端引导用户抓取)。"""
     try:
-        return json.loads(CATALOG_FILE.read_text(encoding="utf-8"))
+        data = json.loads(CATALOG_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(data, dict) or not isinstance(data.get("levels"), list):
+        return None
+    return data
 
 
 def load_courses(level: str, grade: str, dept: str, major: str) -> dict | None:
     """读取某专业的课程列表缓存(含 updated_at 与 courses 字段); 未缓存返回 None。"""
     try:
-        return json.loads(courses_file(level, grade, dept, major).read_text(encoding="utf-8"))
+        data = json.loads(
+            courses_file(level, grade, dept, major).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(data, dict) or not isinstance(data.get("courses"), list):
+        return None
+    return data

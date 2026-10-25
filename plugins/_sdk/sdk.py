@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -19,7 +18,6 @@ from typing import Any
 from selenium import webdriver
 from selenium.common import TimeoutException
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.edge.service import Service
 from selenium.webdriver.support import expected_conditions as EC

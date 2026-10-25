@@ -1,5 +1,4 @@
 """验证:浏览器关闭(WS 断开)→ 宽限期后服务自动退出。"""
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -12,7 +11,7 @@ from _sdk.sdk import make_edge_options  # noqa: E402
 from selenium import webdriver  # noqa: E402
 from selenium.webdriver.edge.service import Service  # noqa: E402
 
-URL = "http://127.0.0.1:8790/"
+URL = (ROOT / "data" / "zyfw-gui.url").read_text(encoding="utf-8").strip()
 
 
 def main() -> None:

@@ -3,8 +3,8 @@
 测试期间备份并恢复真实的 global.json 与 majors.json / courses 缓存。
 """
 import json
-import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,14 +12,13 @@ sys.path.insert(0, str(ROOT))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import app.api as api_module  # noqa: E402
 from app.main import create_app  # noqa: E402
-from app.core import course_cache  # noqa: E402
-from app.core.config_store import DATA_DIR  # noqa: E402
+from app.core import config_store, course_cache, plugin_manager  # noqa: E402
+from app.core.config_store import GlobalConfig, JsonStore  # noqa: E402
 
-app = create_app()
-client = TestClient(app)
-
-GLOBAL_FILE = DATA_DIR / "global.json"
+client: TestClient
+GLOBAL_FILE: Path
 
 
 def _read_bytes(p: Path) -> bytes | None:
@@ -33,7 +32,7 @@ def _write_bytes(p: Path, raw: bytes | None) -> None:
         p.write_bytes(raw)
 
 
-def main() -> None:
+def _run() -> None:
     # 备份真实文件, 全部用例结束后恢复
     global_bak = _read_bytes(GLOBAL_FILE)
     catalog_bak = _read_bytes(course_cache.CATALOG_FILE)
@@ -142,16 +141,56 @@ def main() -> None:
         assert "cg-level" in html and "<style" not in html.lower()
         assert 'style="' not in html.lower()
         assert "ZyfwConfigUI" in html
+        stripped = api_module._strip_plugin_styles(
+            "<style>.x{}</style><div style='color:red' style=width:1px>x</div>")
+        assert "<style" not in stripped.lower() and "style" not in stripped.lower(), stripped
         print("[ok] plugin ui endpoint serves stripped html")
         r = client.get("/api/plugins/spoc-autoplay/ui")
         assert r.status_code == 404, r.status_code
         print("[ok] ui endpoint 404 for schema-only plugin")
+
+        # 8. 合法 JSON 但结构错误的缓存应视为不可用, 而不是让前端崩溃
+        course_cache.CATALOG_FILE.write_text("[]", encoding="utf-8")
+        assert client.get("/api/plugins/course-grab/majors").status_code == 404
+        course_file.write_text("{}", encoding="utf-8")
+        r = client.get(
+            "/api/plugins/course-grab/major-courses"
+            "?level=1&grade=2025&dept=001&major=080717")
+        assert r.status_code == 404, r.status_code
+        print("[ok] structurally invalid cache is rejected")
 
         print("ALL CATALOG TESTS PASSED")
     finally:
         _write_bytes(GLOBAL_FILE, global_bak)
         _write_bytes(course_cache.CATALOG_FILE, catalog_bak)
         _write_bytes(course_file, course_bak)
+
+
+def main() -> None:
+    global client, GLOBAL_FILE
+    with tempfile.TemporaryDirectory(prefix="zyfw-selftest-catalog-") as td:
+        temp_data = Path(td)
+        old_data_dir = config_store.DATA_DIR
+        old_plugin_data = plugin_manager.DATA_DIR_ROOT
+        old_global = api_module.global_config
+        old_grab_dir = course_cache.GRAB_DIR
+        old_catalog_file = course_cache.CATALOG_FILE
+        try:
+            config_store.DATA_DIR = temp_data
+            plugin_manager.DATA_DIR_ROOT = temp_data / "plugins"
+            course_cache.GRAB_DIR = temp_data / "plugins" / "course-grab"
+            course_cache.CATALOG_FILE = course_cache.GRAB_DIR / "majors.json"
+            GLOBAL_FILE = temp_data / "global.json"
+            api_module.global_config = GlobalConfig(
+                JsonStore(GLOBAL_FILE))
+            client = TestClient(create_app())
+            _run()
+        finally:
+            config_store.DATA_DIR = old_data_dir
+            plugin_manager.DATA_DIR_ROOT = old_plugin_data
+            course_cache.GRAB_DIR = old_grab_dir
+            course_cache.CATALOG_FILE = old_catalog_file
+            api_module.global_config = old_global
 
 
 if __name__ == "__main__":

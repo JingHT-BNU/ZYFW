@@ -1,4 +1,5 @@
 """最终 UI 走查:SPOC 2.0 插件详情页渲染确认 + 截图。"""
+import json
 import sys
 import time
 from pathlib import Path
@@ -14,11 +15,15 @@ from selenium.webdriver.common.by import By  # noqa: E402
 
 OUT = ROOT / "data" / "ui_shots"
 OUT.mkdir(parents=True, exist_ok=True)
+URL = (ROOT / "data" / "zyfw-gui.url").read_text(encoding="utf-8").strip()
+PLUGIN_VERSION = json.loads(
+    (ROOT / "plugins" / "spoc-autoplay" / "plugin.json").read_text(encoding="utf-8")
+)["version"]
 
 driver = webdriver.Edge(service=Service(), options=make_edge_options(headless=False))
 driver.set_window_size(1400, 900)
 try:
-    driver.get("http://127.0.0.1:8790/")
+    driver.get(URL)
     time.sleep(3)
     driver.find_elements(By.CSS_SELECTOR, ".nav-item")[0].click()
     time.sleep(0.5)
@@ -35,7 +40,7 @@ try:
     labels = [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".el-form-item__label")]
     print("version tag:", ver)
     print("labels:", labels)
-    assert "2.0.0" in ver
+    assert ver.lstrip("v") == PLUGIN_VERSION, (ver, PLUGIN_VERSION)
     assert any("学习内容页" in l for l in labels)
     assert any("只刷未完成" in l for l in labels)
     driver.save_screenshot(str(OUT / "plugin20_detail.png"))

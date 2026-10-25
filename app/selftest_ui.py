@@ -12,7 +12,7 @@ from selenium import webdriver  # noqa: E402
 from selenium.webdriver.edge.service import Service  # noqa: E402
 from selenium.webdriver.common.by import By  # noqa: E402
 
-URL = "http://127.0.0.1:8790/"
+URL = (ROOT / "data" / "zyfw-gui.url").read_text(encoding="utf-8").strip()
 
 
 def main() -> None:
@@ -40,7 +40,7 @@ def main() -> None:
         navs = driver.find_elements(By.CSS_SELECTOR, ".nav-item")
         navs[2].click()
         time.sleep(1)
-        assert driver.find_elements(By.CSS_SELECTOR, ".settings-grid")
+        assert "全局设置" in driver.find_element(By.CSS_SELECTOR, ".page-header h1").text
         print("settings page ok")
 
         # 打开插件详情(course-grab)
@@ -50,9 +50,7 @@ def main() -> None:
         btns[0].click()
         time.sleep(1.5)
         assert driver.find_elements(By.CSS_SELECTOR, ".log-box")
-        form_items = driver.find_elements(By.CSS_SELECTOR, ".el-form-item")
-        print(f"detail form items: {len(form_items)}")
-        assert len(form_items) >= 5
+        assert driver.find_elements(By.ID, "cg-load"), "抢课自定义配置界面未加载"
         print("detail page ok")
 
         driver.save_screenshot(str(ROOT / "data" / "smoke_dashboard.png"))

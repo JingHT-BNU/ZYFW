@@ -20,6 +20,9 @@ from selenium.webdriver.edge.service import Service  # noqa: E402
 BASE = (ROOT / "data" / "zyfw-gui.url").read_text(encoding="utf-8").strip()
 OUT = ROOT / "data" / "ui_shots"
 OUT.mkdir(parents=True, exist_ok=True)
+PLUGIN_VERSION = json.loads(
+    (ROOT / "plugins" / "spoc-autoplay" / "plugin.json").read_text(encoding="utf-8")
+)["version"]
 
 
 def api(path, method="GET", body=None):
@@ -58,7 +61,7 @@ def main() -> None:
         assert clicked, "未找到 SPOC 卡片按钮"
 
         ver = driver.find_element(By.CSS_SELECTOR, ".page-header .el-tag").text
-        assert "2.1.0" in ver, f"版本号未更新: {ver}"
+        assert ver.lstrip("v") == PLUGIN_VERSION, (ver, PLUGIN_VERSION)
         print("[ok] version tag:", ver)
 
         # 等待线程面板出现(插件首个视频开播后即有 progress 事件)

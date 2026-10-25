@@ -6,10 +6,10 @@ import json
 import shutil
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import JSONResponse
 
 from .core.config_store import GlobalConfig, PluginConfigStore
 from .core import course_cache
@@ -82,8 +82,12 @@ def _effective_plugin_config(plugin: dict, cfg: dict) -> dict:
     """
     g = global_config.get()
     effective = dict(cfg)
-    src = effective.get("account") or {}
-    gsrc = g.get("account") or {}
+    src = effective.get("account")
+    if not isinstance(src, dict):
+        src = {}
+    gsrc = g.get("account")
+    if not isinstance(gsrc, dict):
+        gsrc = {}
     merged = {
         "username": src.get("username") or gsrc.get("username") or "",
         "password": src.get("password") or gsrc.get("password") or "",
@@ -91,9 +95,51 @@ def _effective_plugin_config(plugin: dict, cfg: dict) -> dict:
     effective["account"] = merged
     effective["username"] = merged["username"]
     effective["password"] = merged["password"]
-    effective.setdefault("general", {}).setdefault(
-        "driver_path", g.get("general", {}).get("driver_path", ""))
+    general = effective.get("general")
+    if not isinstance(general, dict):
+        general = {}
+        effective["general"] = general
+    global_general = g.get("general")
+    if not isinstance(global_general, dict):
+        global_general = {}
+    general.setdefault("driver_path", global_general.get("driver_path", ""))
     return effective
+
+
+def _restore_masked_secrets(patch: object, current: object) -> object:
+    """Recursively replace ``******`` placeholders without mutating request data."""
+    if isinstance(patch, dict):
+        base = current if isinstance(current, dict) else {}
+        return {
+            key: _restore_masked_secrets(value, base.get(key))
+            for key, value in patch.items()
+        }
+    if isinstance(patch, list):
+        base = current if isinstance(current, list) else []
+        return [
+            _restore_masked_secrets(value, base[i] if i < len(base) else None)
+            for i, value in enumerate(patch)
+        ]
+    if patch == "******" and isinstance(current, str) and current:
+        return current
+    return patch
+
+
+def _config_patch(body: dict) -> dict:
+    patch = body.get("config")
+    if not isinstance(patch, dict):
+        raise HTTPException(422, "config 必须是 JSON 对象")
+    return patch
+
+
+def _strip_plugin_styles(html: str) -> str:
+    """Remove plugin-provided CSS, including both quote styles for attributes."""
+    import re as _re
+    html = _re.sub(r"<style\b[^>]*>[\s\S]*?</style>", "", html, flags=_re.I)
+    return _re.sub(
+        r"""\sstyle\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""",
+        "", html, flags=_re.I,
+    )
 
 
 # ---------------- 插件 ----------------
@@ -105,7 +151,8 @@ def list_plugins():
 
 @api_router.post("/plugins/install")
 async def install_plugin(file: UploadFile = File(...)):
-    tmp = Path(tempfile.gettempdir()) / f"zyfw-plugin-{file.filename}"
+    # 文件名完全由服务端生成, 不拼接客户端可控路径。
+    tmp = Path(tempfile.gettempdir()) / f"zyfw-plugin-{uuid.uuid4().hex}.zip"
     try:
         with open(tmp, "wb") as f:
             shutil.copyfileobj(file.file, f)
@@ -151,7 +198,6 @@ def get_plugin_ui(plugin_id: str):
     标签与 style 属性(插件界面不允许自带 CSS, 风格由宿主 zy-* 类统一提供),
     防止插件破坏主界面外观或注入钓鱼样式。脚本保留(经用户主动安装插件)。
     """
-    import re as _re
     try:
         plugin = pm.get_plugin(plugin_id)
     except PluginError as e:
@@ -159,13 +205,14 @@ def get_plugin_ui(plugin_id: str):
     ui_name = plugin.get("config_ui") or ""
     if not ui_name:
         raise HTTPException(404, "该插件未提供自定义配置界面")
-    ui_path = Path(plugin["dir"]) / ui_name
+    plugin_dir = Path(plugin["dir"]).resolve()
+    ui_path = (plugin_dir / ui_name).resolve()
+    if not ui_path.is_relative_to(plugin_dir):
+        raise HTTPException(400, "配置界面文件不在插件目录内")
     if not ui_path.is_file():
         raise HTTPException(404, f"配置界面文件不存在: {ui_name}")
     html = ui_path.read_text(encoding="utf-8")
-    html = _re.sub(r"<style\b[^>]*>[\s\S]*?</style>", "", html, flags=_re.I)
-    html = _re.sub(r'\sstyle="[^"]*"', "", html, flags=_re.I)
-    return {"html": html}
+    return {"html": _strip_plugin_styles(html)}
 
 
 @api_router.put("/plugins/{plugin_id}/config")
@@ -176,17 +223,7 @@ async def save_plugin_config(plugin_id: str, body: dict):
         raise HTTPException(404, str(e))
     store = PluginConfigStore(plugin_id)
     old = store.get()
-    new = body.get("config", {})
-    # 密码字段传回 ****** 表示未修改
-    for k, v in list(new.items()):
-        if v == "******" and isinstance(old.get(k), str) and old.get(k):
-            new[k] = old[k]
-    patch_acc = new.get("account")
-    if isinstance(patch_acc, dict):
-        old_acc = old.get("account", {})
-        for f in ("username", "password"):
-            if patch_acc.get(f) == "******" and old_acc.get(f):
-                patch_acc[f] = old_acc[f]
+    new = _restore_masked_secrets(_config_patch(body), old)
     store.save(new)
     return {"ok": True}
 
@@ -202,7 +239,10 @@ def start_plugin(plugin_id: str):
     cfg = PluginConfigStore(plugin_id).get()
     effective = _effective_plugin_config(plugin, cfg)
     data_dir = pm.plugin_data_dir(plugin_id)
-    entry = Path(plugin["dir"]) / plugin["entry"]
+    plugin_dir = Path(plugin["dir"]).resolve()
+    entry = (plugin_dir / plugin["entry"]).resolve()
+    if not entry.is_relative_to(plugin_dir):
+        raise HTTPException(400, "插件入口文件不在插件目录内")
     env_extra = {"PYTHONPATH": str(PLUGINS_DIR)}
     try:
         runner.start(plugin_id, entry, effective, data_dir, env_extra=env_extra)
@@ -219,6 +259,7 @@ def stop_plugin(plugin_id: str):
 
 @api_router.get("/plugins/{plugin_id}/logs")
 def plugin_logs(plugin_id: str, limit: int = 200):
+    limit = max(1, min(limit, 2000))
     return {"events": get_bus().recent(plugin_id, limit)}
 
 
@@ -251,7 +292,10 @@ def _start_grab_task(task: str, extra: dict) -> None:
     effective["task"] = task
     effective.update(extra)
     data_dir = pm.plugin_data_dir(_GRAB_ID)
-    entry = Path(plugin["dir"]) / plugin["entry"]
+    plugin_dir = Path(plugin["dir"]).resolve()
+    entry = (plugin_dir / plugin["entry"]).resolve()
+    if not entry.is_relative_to(plugin_dir):
+        raise HTTPException(400, "插件入口文件不在插件目录内")
     env_extra = {"PYTHONPATH": str(PLUGINS_DIR)}
     try:
         runner.start(_GRAB_ID, entry, effective, data_dir, env_extra=env_extra)
@@ -325,13 +369,7 @@ def get_global():
 
 @api_router.put("/global")
 async def update_global(body: dict):
-    patch = body.get("config", {})
-    patch_acc = patch.get("account")
-    if isinstance(patch_acc, dict):
-        cur = global_config.get().get("account", {})
-        for f in ("username", "password"):
-            if patch_acc.get(f) == "******" and cur.get(f):
-                patch_acc[f] = cur[f]
+    patch = _restore_masked_secrets(_config_patch(body), global_config.get())
     global_config.update(patch)
     return {"ok": True}
 

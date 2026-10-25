@@ -24,9 +24,12 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import queue
 import re
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -130,8 +133,26 @@ def cookie_file(ctx) -> Path:
 
 
 def save_cookies(ctx, cookies: list) -> None:
-    with open(cookie_file(ctx), "w", encoding="utf-8") as f:
-        json.dump({"saved_at": time.time(), "cookies": cookies}, f, ensure_ascii=False)
+    path = cookie_file(ctx)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent,
+            prefix=".cookies-", suffix=".tmp", delete=False,
+        ) as f:
+            tmp_path = f.name
+            json.dump({"saved_at": time.time(), "cookies": cookies},
+                      f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def load_cookies(ctx) -> list | None:
@@ -200,6 +221,8 @@ def list_leaves(driver, sign: str, cid: str) -> list[dict]:
                 else:
                     continue
             for lf in leaves:
+                if not isinstance(lf, dict) or lf.get("id") is None:
+                    continue
                 out.append({
                     "id": lf["id"],
                     "name": lf.get("name", ""),
@@ -237,7 +260,12 @@ def is_leaf_done(sch: dict, leaf_id) -> bool:
 def collect_targets(ctx, driver, pairs: list[tuple[str, str]], only_unfinished: bool) -> list[dict]:
     """汇总目标视频: [{sign,cid,leaf_id,name,course}]。"""
     targets = []
+    seen_targets: set[tuple[str, str, str]] = set()
+    seen_pairs: set[tuple[str, str]] = set()
     for sign, cid in pairs:
+        if (sign, cid) in seen_pairs:
+            continue
+        seen_pairs.add((sign, cid))
         try:
             leaves = list_leaves(driver, sign, cid)
         except RuntimeError as e:
@@ -251,6 +279,10 @@ def collect_targets(ctx, driver, pairs: list[tuple[str, str]], only_unfinished: 
                    if not (only_unfinished and is_leaf_done(sch, lf["id"]))]
         ctx.status(f"课程 {sign}/{cid}: 视频共 {len(videos)},待刷 {len(pending)}")
         for lf in pending:
+            key = (sign, cid, str(lf["id"]))
+            if key in seen_targets:
+                continue
+            seen_targets.add(key)
             targets.append({
                 "sign": sign, "cid": cid, "leaf_id": lf["id"],
                 "name": lf["name"], "course": f"{sign}/{cid}",
@@ -314,9 +346,12 @@ class Tracker:
 
     def mark(self, key: str, status: str):
         with self.lock:
+            previous = self.results.get(key)
             self.results[key] = status
-            if status == "已完成":
+            if status == "已完成" and previous != "已完成":
                 self.completed += 1
+            elif previous == "已完成" and status != "已完成":
+                self.completed -= 1
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -533,12 +568,28 @@ def worker(ctx, wid: int, jobs: queue.Queue, cookies: list, tracker: Tracker, sp
 
 # ---------------- 主流程 ----------------
 
+def _bounded_number(value, default: float, low: float, high: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(number):
+        return default
+    return min(high, max(low, number))
+
+
 def main() -> None:
     ctx = PluginContext()
-    speedup = float(ctx.cfg("speedup", 3.0))
-    workers_n = int(ctx.cfg("workers", 4))
+    speedup = _bounded_number(ctx.cfg("speedup", 3.0), 3.0, 1.0, 16.0)
+    workers_n = int(_bounded_number(ctx.cfg("workers", 4), 4, 1, 16))
     only_unfinished = bool(ctx.cfg("only_unfinished", True))
-    study_urls = [u.strip() for u in (ctx.cfg("study_urls") or []) if u.strip()]
+    raw_urls = ctx.cfg("study_urls") or []
+    if isinstance(raw_urls, str):
+        raw_urls = [raw_urls]
+    if not isinstance(raw_urls, (list, tuple)):
+        ctx.log("学习内容页链接配置格式错误,按未配置处理")
+        raw_urls = []
+    study_urls = [str(u).strip() for u in raw_urls if str(u).strip()]
 
     if not ctx.username or not ctx.password:
         ctx.log("未配置统一认证账号(全局设置或插件配置),退出")
@@ -588,6 +639,9 @@ def main() -> None:
     while any(th.is_alive() for th in threads):
         ctx.progress(**tracker.snapshot())
         time.sleep(2)
+    for t in targets:
+        key = f"{t['sign']}/{t['cid']}/{t['leaf_id']}"
+        tracker.results.setdefault(key, "未处理")
     ctx.progress(**tracker.snapshot())
 
     done = sum(1 for v in tracker.results.values() if v == "已完成")

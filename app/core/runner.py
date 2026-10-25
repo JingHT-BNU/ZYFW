@@ -8,9 +8,10 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 _ROOT = Path(__file__).resolve().parents[2]
 PYTHON_EXE = sys.executable
@@ -21,6 +22,13 @@ STATUS_RUNNING = "running"
 STATUS_EXITED = "exited"
 STATUS_CRASHED = "crashed"
 STATUS_STOPPING = "stopping"
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 class EventBus:
@@ -60,19 +68,23 @@ class EventBus:
 
 
 _event_bus: EventBus | None = None
+_event_bus_lock = threading.Lock()
 
 
 def get_bus() -> EventBus:
     global _event_bus
     if _event_bus is None:
-        _event_bus = EventBus()
+        with _event_bus_lock:
+            if _event_bus is None:
+                _event_bus = EventBus()
     return _event_bus
 
 
 class PluginProcess:
-    def __init__(self, plugin_id: str, proc: subprocess.Popen):
+    def __init__(self, plugin_id: str, proc: subprocess.Popen, config_path: Path):
         self.plugin_id = plugin_id
         self.proc = proc
+        self.config_path = config_path
         self.started_at = time.time()
         self.status = STATUS_RUNNING
         self.exit_code: int | None = None
@@ -82,16 +94,17 @@ class PluginProcess:
 
     def stop(self, timeout: float = 8.0) -> bool:
         """先 CTRL_BREAK 温和通知,超时后杀整棵进程树。返回是否仍在运行。"""
+        if self.proc.poll() is not None:
+            return False
         self.status = STATUS_STOPPING
-        if self.proc.poll() is None:
-            try:
-                self.proc.send_signal(signal.CTRL_BREAK_EVENT)
-            except (OSError, ProcessLookupError):
-                pass
-            try:
-                self.proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                self._kill_tree()
+        try:
+            self.proc.send_signal(signal.CTRL_BREAK_EVENT)
+        except (OSError, ProcessLookupError):
+            pass
+        try:
+            self.proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._kill_tree()
         return self.proc.poll() is None
 
     def _kill_tree(self) -> None:
@@ -121,13 +134,19 @@ class Runner:
         with self._lock:
             out = {}
             for pid_name, pp in self._processes.items():
-                if pp.proc.poll() is not None and pp.status == STATUS_RUNNING:
+                alive = pp.proc.poll() is None
+                if not alive and pp.status == STATUS_RUNNING:
                     pp.status = STATUS_EXITED
                     pp.exit_code = pp.proc.returncode
+                elif not alive and pp.status == STATUS_STOPPING:
+                    pp.status = STATUS_STOPPED
+                    pp.exit_code = pp.proc.returncode
+                running = alive and pp.status in (
+                    STATUS_STARTING, STATUS_RUNNING, STATUS_STOPPING)
                 out[pid_name] = {
-                    "running": pp.status == STATUS_RUNNING,
+                    "running": running,
                     "status": pp.status,
-                    "pid": pp.proc.pid if pp.status == STATUS_RUNNING else None,
+                    "pid": pp.proc.pid if running else None,
                     "started_at": pp.started_at,
                     "progress": dict(pp.last_progress) if pp.last_progress else None,
                 }
@@ -150,7 +169,11 @@ class Runner:
             existing = self._processes.get(plugin_id)
             if existing and existing.proc.poll() is None:
                 raise RuntimeError(f"插件 {plugin_id} 已在运行")
-            config_path = data_dir / "runtime_config.json"
+            # 运行时配置含解密后的凭据, 使用唯一隐藏文件并在进程结束后删除。
+            _safe_unlink(data_dir / "runtime_config.json")
+            for stale in data_dir.glob(".runtime-*.json"):
+                _safe_unlink(stale)
+            config_path = data_dir / f".runtime-{uuid.uuid4().hex}.json"
             config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
@@ -165,42 +188,45 @@ class Runner:
             if os.name == "nt":
                 creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
-            proc = subprocess.Popen(
-                [
-                    PYTHON_EXE, str(entry_path),
-                    "--config", str(config_path),
-                    "--datadir", str(data_dir),
-                ],
-                cwd=str(entry_path.parent),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=env,
-                creationflags=creationflags,
-            )
-            pp = PluginProcess(plugin_id, proc)
+            try:
+                proc = subprocess.Popen(
+                    [
+                        PYTHON_EXE, str(entry_path),
+                        "--config", str(config_path),
+                        "--datadir", str(data_dir),
+                    ],
+                    cwd=str(entry_path.parent),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=env,
+                    creationflags=creationflags,
+                )
+            except Exception:
+                _safe_unlink(config_path)
+                raise
+            pp = PluginProcess(plugin_id, proc, config_path)
             self._processes[plugin_id] = pp
 
-        t = threading.Thread(target=self._pump, args=(pp,), daemon=True, name=f"pump-{plugin_id}")
-        t.start()
+        # 启动标记必须先于首条子进程输出发布, 否则自定义界面按日志定位
+        # 本次任务起点时会漏掉启动早期的 progress。
         self.bus.publish({
             "type": "plugin_status", "plugin": plugin_id,
             "status": STATUS_RUNNING, "pid": proc.pid,
         })
+        t = threading.Thread(target=self._pump, args=(pp,), daemon=True, name=f"pump-{plugin_id}")
+        t.start()
 
     def stop(self, plugin_id: str) -> None:
         with self._lock:
             pp = self._processes.get(plugin_id)
         if not pp:
             return
-        still = pp.stop()
-        self.bus.publish({
-            "type": "plugin_status", "plugin": plugin_id,
-            "status": STATUS_STOPPED if not still else STATUS_STOPPING,
-        })
+        # 终态统一由 _pump 发布, 避免 exited/stopped 重复或顺序倒置。
+        pp.stop()
 
     # ---------- 输出采集 ----------
 
@@ -221,6 +247,7 @@ class Runner:
                 pp.last_progress["ts"] = round(time.time(), 3)
             self.bus.publish(event)
         code = proc.wait()
+        _safe_unlink(pp.config_path)
         with self._lock:
             if pp.status not in (STATUS_STOPPING,):
                 pp.status = STATUS_CRASHED if code not in (0, None) else STATUS_EXITED
@@ -240,7 +267,9 @@ class Runner:
             try:
                 data = json.loads(stripped)
                 if isinstance(data, dict) and "__event__" in data:
-                    return {"type": str(data["__event__"]), "plugin": plugin_id, **data}
+                    event = {**data, "plugin": plugin_id}
+                    event["type"] = str(data["__event__"])
+                    return event
             except json.JSONDecodeError:
                 pass
         return {"type": "log", "plugin": plugin_id, "line": line, "ts": time.time()}

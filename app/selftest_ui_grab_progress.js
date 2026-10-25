@@ -217,6 +217,9 @@ async function main() {
   t6.els["cg-dept"].value = "001";
   await t6.els["cg-dept"].dispatch("change");
   t6.els["cg-major"].value = "080717";
+  // 即使最后一次 change 未触发(浏览器重挂载/自动化时序), 按钮也不得卡死。
+  assert(t6.els["cg-load"].disabled === false,
+         "专业有值但 change 未触发时抓取按钮仍应可点击");
   await t6.els["cg-major"].dispatch("change");
   await tick();   // maybeAutoLoad 异步加载课程缓存
   assert(t6.els["cg-load"].disabled === false, "选满四级后应启用抓取按钮");
