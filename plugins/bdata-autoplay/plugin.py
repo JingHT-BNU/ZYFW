@@ -31,7 +31,9 @@ from _sdk.sdk import (  # noqa: E402
     find_strict,
 )
 from selenium.common.exceptions import WebDriverException  # noqa: E402
+from selenium.webdriver.common.action_chains import ActionChains  # noqa: E402
 from selenium.webdriver.common.by import By  # noqa: E402
+from selenium.webdriver.common.keys import Keys  # noqa: E402
 
 from llm import (  # noqa: E402
     LLMError,
@@ -382,7 +384,8 @@ def _task_video_entries(driver) -> list[dict]:
 
 def _scroll_task_pane(driver) -> bool:
     js = """
-    const dialog = document.querySelector('.el-dialog');
+    const pane = document.getElementById('pane-first');
+    const dialog = pane && pane.closest('.el-dialog');
     if (!dialog) return false;
     const candidates = Array.from(dialog.querySelectorAll('*')).filter(el =>
         el.scrollHeight > el.clientHeight + 10 &&
@@ -438,7 +441,7 @@ def open_task_dialog(driver) -> None:
             time.sleep(0.2)
         if _task_pane_ready(driver, require_cards=False):
             try:
-                close_task_dialog(driver)
+                close_task_dialog(driver, reload_on_failure=True)
             except RuntimeError:
                 pass
     raise RuntimeError(f"任务进度窗口未能打开: {last_error}")
@@ -515,7 +518,7 @@ def collect_task_groups(driver) -> list[dict]:
                 break
             time.sleep(0.15)
     finally:
-        close_task_dialog(driver)
+        close_task_dialog(driver, reload_on_failure=True)
     return [merged[key] for key in order]
 
 
@@ -568,37 +571,120 @@ def collect_task_videos(driver) -> list[dict]:
     return list(videos.values())
 
 
-def close_task_dialog(driver) -> None:
-    # 优先模拟点击遮罩空白处; 站点未关闭时回退到标题栏关闭按钮。
-    blank_js = """
-    const dialog = document.querySelector('.el-dialog');
-    const overlay = dialog && dialog.closest('.el-overlay');
-    if (!overlay) return false;
-    for (const type of ['mousedown', 'mouseup', 'click']) {
-        overlay.dispatchEvent(new MouseEvent(type, {
-            bubbles: true, cancelable: true, clientX: 5, clientY: 5
-        }));
-    }
-    return true;
-    """
-    close_js = """
-    const button = document.querySelector('.el-dialog__headerbtn');
-    if (button) button.click();
-    return true;
-    """
-    for action in (blank_js, close_js, close_js):
+def _wait_task_dialog_closed(driver, timeout: float = 1.8) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _task_pane_ready(driver, require_cards=False):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _task_dialog_element(driver):
+    panes = driver.find_elements(By.ID, "pane-first")
+    if not panes:
+        return None
+    return driver.execute_script(
+        "return arguments[0].closest('.el-dialog');", panes[0])
+
+
+def _task_close_button(driver) -> bool:
+    dialog = _task_dialog_element(driver)
+    if dialog is None:
+        return False
+    buttons = dialog.find_elements(By.CSS_SELECTOR, ".el-dialog__headerbtn")
+    for button in buttons:
+        if not button.is_displayed():
+            continue
         try:
-            driver.execute_script(action)
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center'});", button)
+            button.click()
+        except WebDriverException:
+            try:
+                driver.execute_script("arguments[0].click();", button)
+            except WebDriverException:
+                continue
+        return True
+    return False
+
+
+def _task_overlay_native_click(driver) -> bool:
+    dialog = _task_dialog_element(driver)
+    if dialog is None:
+        return False
+    overlay = driver.execute_script(
+        "return arguments[0].closest('.el-overlay');", dialog)
+    if overlay is None:
+        return False
+    size = overlay.size
+    try:
+        ActionChains(driver).move_to_element(overlay).move_by_offset(
+            -(size.get("width", 0) // 2) + 10,
+            -(size.get("height", 0) // 2) + 10,
+        ).click().perform()
+        return True
+    except WebDriverException:
+        return False
+
+
+def _task_overlay_js_click(driver) -> bool:
+    return bool(driver.execute_script(
+        """
+        const pane = document.getElementById('pane-first');
+        const dialog = pane && pane.closest('.el-dialog');
+        const overlay = dialog && dialog.closest('.el-overlay');
+        const target = dialog && dialog.closest('.el-overlay-dialog');
+        if (!overlay || !target) return false;
+        const rect = dialog.getBoundingClientRect();
+        const x = Math.max(2, Math.min(rect.left - 4, window.innerWidth - 2));
+        const y = Math.max(2, Math.min(rect.top - 4, window.innerHeight - 2));
+        for (const type of ['mousedown', 'mouseup', 'click']) {
+            target.dispatchEvent(new MouseEvent(type, {
+                bubbles: true, cancelable: true, clientX: x, clientY: y
+            }));
+        }
+        return true;
+        """
+    ))
+
+
+def _task_dialog_escape(driver) -> bool:
+    try:
+        driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+        return True
+    except WebDriverException:
+        return False
+
+
+def close_task_dialog(driver, reload_on_failure: bool = False) -> None:
+    """Close only the task dialog that contains ``#pane-first``."""
+    if not _task_pane_ready(driver, require_cards=False):
+        return
+    actions = (
+        _task_close_button,
+        _task_overlay_native_click,
+        _task_dialog_escape,
+        _task_overlay_js_click,
+    )
+    for _ in range(2):
+        for action in actions:
+            try:
+                triggered = action(driver)
+            except WebDriverException:
+                triggered = False
+            if triggered and _wait_task_dialog_closed(driver):
+                return
+        time.sleep(0.3)
+    if reload_on_failure:
+        try:
+            driver.get(driver.current_url)
+            if _wait_task_dialog_closed(driver, timeout=8):
+                return
         except WebDriverException:
             pass
-        deadline = time.time() + 2.0
-        while time.time() < deadline:
-            if not driver.find_elements(By.ID, "pane-first"):
-                return
-            if not _task_pane_ready(driver, require_cards=False):
-                return
-            time.sleep(0.1)
-    raise RuntimeError("任务进度窗口未能关闭")
+    raise RuntimeError(
+        "任务进度窗口未能关闭（已尝试关闭按钮、遮罩点击和 Esc）")
 
 
 def read_quiz_fields(driver, survey_strategy: str = "fixed",
