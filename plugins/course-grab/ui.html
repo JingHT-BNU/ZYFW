@@ -1,0 +1,691 @@
+<div class="zy-config" id="cg-ui">
+  <!-- 专业目录引导: 全局仅需抓取一次, 之后固定使用本地缓存; 由用户点击按钮触发 -->
+  <div class="zy-alert zy-warn" id="cg-catalog-missing" hidden>
+    <span id="cg-catalog-text">专业目录尚未抓取(全局仅需一次,完成后固定使用本地缓存,无需再获取)。</span>
+    <button class="zy-btn zy-warning" id="cg-grab-catalog">抓取专业目录</button>
+    <span class="zy-hint" id="cg-catalog-hint"></span>
+  </div>
+
+  <!-- 抓取进度条: 宿主统一风格的 zy-progress 组件, 显示完成度与预计剩余时间 -->
+  <div class="zy-row" id="cg-catalog-progress" hidden>
+    <div class="zy-progress"><div class="zy-progress-bar" id="cg-catalog-bar"></div></div>
+    <span class="zy-hint" id="cg-catalog-progress-text"></span>
+  </div>
+
+  <!-- 基础运行参数 -->
+  <div class="zy-row">
+    <div class="zy-field">
+      <label>运行模式</label>
+      <select id="cg-mode">
+        <option value="auto">轮询选课(到名额自动提交)</option>
+        <option value="once">单次选课(仅提交一次)</option>
+      </select>
+    </div>
+    <div class="zy-field">
+      <label>轮询间隔(秒)</label>
+      <input type="number" id="cg-poll" min="0.5" max="60" step="0.5" value="2">
+    </div>
+    <div class="zy-field">
+      <label>无头模式</label>
+      <label class="zy-hint"><input type="checkbox" id="cg-headless" checked> 无头运行浏览器</label>
+    </div>
+  </div>
+  <div class="zy-row">
+    <div class="zy-field">
+      <label>统一认证账号(留空用全局)</label>
+      <input type="text" id="cg-username" placeholder="留空使用全局设置" autocomplete="off">
+    </div>
+    <div class="zy-field">
+      <label>统一认证密码(留空用全局)</label>
+      <input type="password" id="cg-password" placeholder="已加密存储" autocomplete="new-password">
+    </div>
+  </div>
+
+  <!-- 专业选择: 与教务系统"课程安排明细"一致的级联筛选 -->
+  <div class="zy-row">
+    <div class="zy-field">
+      <label>培养层次</label>
+      <select id="cg-level"><option value="">请选择</option></select>
+    </div>
+    <div class="zy-field">
+      <label>年级</label>
+      <select id="cg-grade" disabled><option value="">请选择</option></select>
+    </div>
+    <div class="zy-field">
+      <label>院(系)/部</label>
+      <select id="cg-dept" disabled><option value="">请选择</option></select>
+    </div>
+    <div class="zy-field">
+      <label>专业</label>
+      <select id="cg-major" disabled><option value="">请选择</option></select>
+    </div>
+    <button class="zy-btn zy-primary" id="cg-load" disabled>开始专业课程抓取</button>
+  </div>
+
+  <!-- 课程抓取进度条: 与专业目录抓取一致的宿主统一风格组件 -->
+  <div class="zy-row" id="cg-courses-progress" hidden>
+    <div class="zy-progress"><div class="zy-progress-bar" id="cg-courses-bar"></div></div>
+    <span class="zy-hint" id="cg-courses-progress-text"></span>
+  </div>
+
+  <!-- 课程列表(本地缓存): 勾选即加入抢课列表 -->
+  <div id="cg-courses-wrap" hidden>
+    <div class="zy-row">
+      <span class="zy-hint" id="cg-courses-meta"></span>
+      <input type="text" id="cg-filter" placeholder="过滤: 课程名 / 代码">
+    </div>
+    <table class="zy-table">
+      <thead>
+        <tr>
+          <th>选</th>
+          <th>课程</th>
+          <th>代码</th>
+          <th>候选班级(留空=不限)</th>
+          <th>周次 / 方式 / 教师 / 时间 / 地点(含子课程)</th>
+        </tr>
+      </thead>
+      <tbody id="cg-courses"></tbody>
+    </table>
+  </div>
+  <div class="zy-alert" id="cg-courses-empty" hidden></div>
+
+  <div class="zy-row">
+    <button class="zy-btn zy-primary" id="cg-save">保存配置</button>
+    <span class="zy-hint">
+      勾选的课程即抢课列表,无需手动输入课程代码;选好专业后点「开始专业课程抓取」
+      可抓取/更新该专业的课程缓存,完成后自动列出。配置允许为空保存
+      (抢课前先设置无头模式等选项)。保存后启动插件生效。
+    </span>
+  </div>
+  <div class="zy-alert" id="cg-msg" hidden></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var Z = window.ZyfwConfigUI;
+  if (!Z) return;
+
+  var $ = function (id) { return document.getElementById(id); };
+  // 已勾选课程: code -> 候选班级输入框原文(空 = 不限班级)
+  var picked = {};
+  // 当前展示的课程缓存(点「确定」后填充)
+  var cache = null;
+  // 级联目录(majors.json 的 levels 树)
+  var catalog = null;
+  // 已保存的专业 {level:{v,t},...}
+  var savedSp = null;
+
+  function showMsg(text, cls) {
+    var el = $("cg-msg");
+    el.textContent = text;
+    el.className = "zy-alert" + (cls ? " " + cls : "");
+    el.hidden = false;
+  }
+
+  function fillSelect(sel, items, keepValue) {
+    var old = keepValue ? sel.value : "";
+    sel.innerHTML = "";
+    var ph = document.createElement("option");
+    ph.value = "";
+    ph.textContent = "请选择";
+    sel.appendChild(ph);
+    (items || []).forEach(function (it) {
+      var o = document.createElement("option");
+      o.value = it.v;
+      o.textContent = it.t;
+      sel.appendChild(o);
+    });
+    if (old) sel.value = old;
+    sel.disabled = !(items && items.length);
+  }
+
+  function nodeAt(path) {
+    // path: ["level","grade","dept"] 各级 value, 逐层下钻目录树,
+    // 返回路径最深处节点的下一级选项数组(层级节点分别持有 grades/depts/majors)
+    var cur = catalog ? catalog.levels : null;
+    for (var i = 0; i < path.length; i++) {
+      if (!cur) return null;
+      var hit = null;
+      for (var j = 0; j < cur.length; j++) {
+        if (cur[j].v === path[i]) { hit = cur[j]; break; }
+      }
+      if (!hit) return null;
+      cur = hit.grades || hit.depts || hit.majors || null;
+    }
+    return cur;
+  }
+
+  function rebuildCascade(selected) {
+    // selected: 可选的预选值 {level,grade,dept,major}, 用于回显已保存专业
+    var lv = $("cg-level"), gr = $("cg-grade"), dp = $("cg-dept"), mj = $("cg-major");
+    fillSelect(lv, catalog ? catalog.levels : null);
+    lv.value = (selected && selected.level) || "";
+    fillSelect(gr, nodeAt([lv.value]), !!lv.value);
+    gr.value = (selected && selected.grade) || "";
+    fillSelect(dp, nodeAt([lv.value, gr.value]), !!gr.value);
+    dp.value = (selected && selected.dept) || "";
+    fillSelect(mj, nodeAt([lv.value, gr.value, dp.value]), !!dp.value);
+    mj.value = (selected && selected.major) || "";
+    syncLoadBtn();
+  }
+
+  function syncLoadBtn() {
+    $("cg-load").disabled = !($("cg-level").value && $("cg-grade").value
+      && $("cg-dept").value && $("cg-major").value);
+  }
+
+  function specialtyNow() {
+    function pair(sel) {
+      var o = sel.selectedOptions[0];
+      return { v: sel.value, t: o && o.value ? o.textContent : "" };
+    }
+    return {
+      level: pair($("cg-level")), grade: pair($("cg-grade")),
+      dept: pair($("cg-dept")), major: pair($("cg-major")),
+    };
+  }
+
+  function coursesKeyOf(rec) {
+    return rec.code || (rec.cells && rec.cells[1]) || "";
+  }
+
+  function renderCourses() {
+    var tbody = $("cg-courses");
+    tbody.innerHTML = "";
+    if (!cache) return;
+    var kw = ($("cg-filter").value || "").trim().toLowerCase();
+    var rows = (cache.courses || []).filter(function (c) {
+      if (!kw) return true;
+      if ((c.code || "").toLowerCase().indexOf(kw) >= 0) return true;
+      return (c.cells || []).some(function (t) {
+        return (t || "").toLowerCase().indexOf(kw) >= 0;
+      });
+    });
+    rows.forEach(function (rec) {
+      var tr = document.createElement("tr");
+      var td1 = document.createElement("td");
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      var key = coursesKeyOf(rec);
+      // 课程代码无法识别的行不能单独报名, 禁用勾选
+      cb.disabled = !rec.code;
+      cb.title = rec.code ? "" : "未识别到课程代码,无法报名";
+      cb.checked = Object.prototype.hasOwnProperty.call(picked, key);
+      cb.addEventListener("change", function () {
+        if (cb.checked) {
+          picked[key] = "";
+          classInput.value = "";
+        } else {
+          delete picked[key];
+        }
+      });
+      td1.appendChild(cb);
+      var td2 = document.createElement("td");
+      td2.textContent = (rec.cells && rec.cells[1]) || "";
+      var td3 = document.createElement("td");
+      td3.textContent = rec.code || "—";
+      var td4 = document.createElement("td");
+      var classInput = document.createElement("input");
+      classInput.type = "text";
+      classInput.placeholder = "如 09, 10";
+      classInput.value = picked[key] || "";
+      classInput.disabled = !cb.checked;
+      classInput.addEventListener("input", function () { picked[key] = classInput.value; });
+      td4.appendChild(classInput);
+      var td5 = document.createElement("td");
+      var main = document.createElement("div");
+      main.textContent = (rec.cells || []).slice(-5).join(" ");
+      td5.appendChild(main);
+      (rec.extra || []).forEach(function (ex) {
+        var sub = document.createElement("div");
+        sub.className = "zy-sub-line";
+        sub.textContent = ex.join(" ");
+        td5.appendChild(sub);
+      });
+      tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3);
+      tr.appendChild(td4); tr.appendChild(td5);
+      tbody.appendChild(tr);
+    });
+    $("cg-courses-meta").textContent = rows.length + " / " + (cache.courses || []).length
+      + " 门课程 · 缓存更新于 " + (cache.updated_at || "-");
+  }
+
+  async function fetchCourses() {
+    // 拉取当前所选专业的课程缓存; 成功渲染表格并返回 true, 未缓存/参数不全返回 false
+    var sp = specialtyNow();
+    if (!(sp.level.v && sp.grade.v && sp.dept.v && sp.major.v)) return false;
+    try {
+      cache = await Z.api("plugins/course-grab/major-courses?level="
+        + encodeURIComponent(sp.level.v) + "&grade=" + encodeURIComponent(sp.grade.v)
+        + "&dept=" + encodeURIComponent(sp.dept.v) + "&major=" + encodeURIComponent(sp.major.v));
+      $("cg-courses-wrap").hidden = false;
+      $("cg-courses-empty").hidden = true;
+      renderCourses();
+      return true;
+    } catch (e) {
+      cache = null;
+      $("cg-courses-wrap").hidden = true;
+      return false;
+    }
+  }
+
+  async function loadCourses() {
+    // 用户可见的加载: 未缓存时提示点「开始专业课程抓取」
+    if (!(await fetchCourses())) {
+      var empty = $("cg-courses-empty");
+      empty.hidden = false;
+      empty.className = "zy-alert zy-warn";
+      empty.textContent = "该专业课程列表尚未缓存。点上方「开始专业课程抓取」,抓取完成后会自动列出。";
+    }
+  }
+
+  function maybeAutoLoad() {
+    // 选满四级后自动加载该专业的课程缓存(如有), 无需再点按钮
+    if ($("cg-level").value && $("cg-grade").value
+        && $("cg-dept").value && $("cg-major").value) {
+      loadCourses();
+    }
+  }
+
+  function collectConfig() {
+    var courses = {};
+    Object.keys(picked).forEach(function (k) {
+      if (!k) return;  // 无代码课程不可报名, 跳过
+      var m = String(picked[k] || "").trim();
+      courses[k] = m ? m.split(/[,，\s]+/).filter(Boolean) : [];
+    });
+    return {
+      mode: $("cg-mode").value,
+      poll_interval: Number($("cg-poll").value) || 2,
+      headless: $("cg-headless").checked,
+      username: $("cg-username").value,
+      password: $("cg-password").value,
+      specialty: specialtyNow(),
+      courses: courses,
+    };
+  }
+
+  async function save() {
+    // 配置允许为空保存: 抢课前可先只设置无头模式/账号等基础选项,
+    // 课程与专业都可以之后再补(课程抓取由「开始专业课程抓取」按钮触发)
+    try {
+      await Z.saveConfig(collectConfig());
+      Z.message("success", "配置已保存;启动插件后生效");
+    } catch (e) {
+      Z.message("error", "保存失败: " + e.message);
+    }
+  }
+
+  function showCatalogBanner(mode) {
+    // mode: "missing"=目录未抓取; "partial"=上次抓取未完成
+    var text = $("cg-catalog-text");
+    var btn = $("cg-grab-catalog");
+    if (mode === "partial") {
+      text.textContent = "专业目录不完整(上次抓取未完成),可重新抓取覆盖。";
+      btn.textContent = "重新抓取专业目录";
+    } else {
+      text.textContent = "专业目录尚未抓取(全局仅需一次,完成后固定使用本地缓存,无需再获取)。";
+      btn.textContent = "抓取专业目录";
+    }
+    $("cg-catalog-missing").hidden = false;
+  }
+
+  async function loadCatalog(selected, fromPoll) {
+    try {
+      var prev = catalog;
+      catalog = await Z.api("plugins/course-grab/majors");
+      if (catalog.partial) showCatalogBanner("partial");
+      else $("cg-catalog-missing").hidden = true;
+      // 首次加载、上一次是半成品、或显式传入预选值时才重建级联;
+      // 轮询刷新中保留用户已做的选择
+      if (!prev || prev.partial || selected) rebuildCascade(selected || null);
+      return true;
+    } catch (e) {
+      catalog = null;
+      showCatalogBanner("missing");
+      rebuildCascade(null);
+      if (!fromPoll) $("cg-catalog-hint").textContent = "";
+      return false;
+    }
+  }
+
+  // ---------------- 专业目录抓取: 用户点按钮触发, 失败可检测可重试 ----------------
+
+  var catalogTimer = null;   // 抓取监控轮询句柄
+
+  function stopCatalogWatch() {
+    if (catalogTimer) { clearInterval(catalogTimer); catalogTimer = null; }
+  }
+
+  async function progressFromEvents() {
+    // 兜底: 旧版主程序的 /api/plugins 不带 progress 字段(插件子进程每次任务
+    // 都从磁盘重新加载新代码, 宿主进程不会), 改从插件事件日志解析进度。
+    // 定位到本次进程启动标记(plugin_status running)之后, 避免读到上一次运行的旧进度
+    try {
+      var data = await Z.api("plugins/course-grab/logs?limit=300");
+      var evs = data.events || [];
+      var start = -1;
+      for (var i = evs.length - 1; i >= 0; i--) {
+        if (evs[i].type === "plugin_status" && evs[i].status === "running") { start = i; break; }
+      }
+      var last = null;
+      for (var j = start + 1; j < evs.length; j++) {
+        if (evs[j].type === "progress") last = evs[j];
+      }
+      return last;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function grabState() {
+    // 查询插件进程状态与最近一次进度; 查询失败时保守视为仍在运行(避免误判完成)
+    try {
+      var data = await Z.api("plugins");
+      var p = (data.plugins || []).find(function (x) { return x.id === "course-grab"; });
+      var st = {
+        running: !!(p && p.running),
+        progress: (p && p.progress) || null,
+      };
+      if (st.running && !st.progress) st.progress = await progressFromEvents();
+      return st;
+    } catch (e) {
+      return { running: true, progress: null };
+    }
+  }
+
+  function fmtEta(s) {
+    s = Math.max(0, Math.round(Number(s) || 0));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    if (h > 0) return h + " 小时 " + m + " 分";
+    if (m > 0) return m + " 分 " + sec + " 秒";
+    return sec + " 秒";
+  }
+
+  function renderGrabProgress(prog) {
+    var row = $("cg-catalog-progress");
+    if (!row || !prog || !(Number(prog.total) > 0)) return;
+    var done = Number(prog.done) || 0, total = Number(prog.total);
+    var pct = Math.min(100, Math.round(done / total * 100));
+    $("cg-catalog-bar").style.width = pct + "%";
+    var txt = "已完成 " + done + "/" + total + " 组合(" + pct + "%)";
+    if (prog.eta_seconds != null) txt += " · 预计剩余 " + fmtEta(prog.eta_seconds);
+    $("cg-catalog-progress-text").textContent = txt;
+    row.hidden = false;
+  }
+
+  function hideGrabProgress() {
+    var row = $("cg-catalog-progress");
+    if (!row) return;
+    row.hidden = true;
+    $("cg-catalog-bar").style.width = "0%";
+  }
+
+  function watchCatalogGrab() {
+    stopCatalogWatch();
+    var hint = $("cg-catalog-hint");
+    var btn = $("cg-grab-catalog");
+    var started = Date.now();
+    var everRunning = false;
+    btn.disabled = true;
+    catalogTimer = setInterval(async function () {
+      // 配置界面已切换/卸载时停止监控
+      if (!document.getElementById("cg-grab-catalog")) { stopCatalogWatch(); return; }
+      try {
+        var ok = await loadCatalog(null, true);
+        var st = await grabState();
+        if (st.running) everRunning = true;
+        if (ok && catalog && !catalog.partial) {
+          stopCatalogWatch();
+          btn.disabled = false;
+          hideGrabProgress();
+          Z.message("success", "专业目录抓取完成,已加载(" + catalog.updated_at + ")");
+        } else if (!st.running && (everRunning || Date.now() - started > 8000)) {
+          // 抓取进程已结束但目录缺失/不完整 → 失败, 允许重试
+          stopCatalogWatch();
+          btn.disabled = false;
+          hideGrabProgress();
+          hint.textContent = "抓取已结束但目录未完成(原因见下方运行日志),可点击按钮重试";
+          Z.message("error", "专业目录抓取失败,请查看运行日志后重试");
+        } else if (st.progress && st.progress.stage
+            && st.progress.stage !== "catalog") {
+          // 占用进程槽位的是其他任务(如抢课/课程抓取), 不属于目录抓取监控范围
+          stopCatalogWatch();
+          btn.disabled = false;
+          hideGrabProgress();
+          hint.textContent = "";
+        } else if (Date.now() - started > 30 * 60 * 1000) {
+          stopCatalogWatch();
+          btn.disabled = false;
+          hideGrabProgress();
+          hint.textContent = "抓取超时,请在本页运行日志查看进度后重试";
+        } else {
+          // 运行中: 渲染进度条(进度事件未到达前显示已用时间)
+          renderGrabProgress(st.progress);
+          hint.textContent = (st.progress && Number(st.progress.total) > 0)
+            ? "抓取中…"
+            : "抓取中…已用 " + Math.round((Date.now() - started) / 1000) + " 秒";
+        }
+      } catch (e) {
+        // 单轮查询失败(网络抖动等)忽略, 下一轮再试
+      }
+    }, 3000);
+  }
+
+  async function onGrabCatalogClick() {
+    var btn = $("cg-grab-catalog");
+    btn.disabled = true;
+    // 立即展示进度条(0% 启动态), 首个进度事件到达前先给用户反馈。
+    // 判空防御: 界面元素由后端每次请求从磁盘读取下发, 与已挂载的旧版 DOM
+    // 可能不一致, 缺元素时只降级提示, 不能让整个点击处理抛错卡死按钮
+    var row = $("cg-catalog-progress");
+    if (row) {
+      row.hidden = false;
+      $("cg-catalog-bar").style.width = "0%";
+      $("cg-catalog-progress-text").textContent = "正在启动抓取…";
+    }
+    $("cg-catalog-hint").textContent = "";
+    try {
+      try {
+        await Z.post("plugins/course-grab/majors/refresh");
+      } catch (e) {
+        // 任务已在运行(如用户重复点击)时转为监控进度; 其他错误提示后恢复按钮
+        if (String(e.message || "").indexOf("已在运行") < 0) throw e;
+        Z.message("info", "检测到抓取任务已在运行,正在监控进度…");
+      }
+      watchCatalogGrab();
+    } catch (e) {
+      btn.disabled = false;
+      hideGrabProgress();
+      Z.message("error", e.message);
+    }
+  }
+
+  // ---------------- 专业课程抓取: 选好专业点按钮触发, 失败可检测可重试 ----------------
+
+  var coursesTimer = null;   // 课程抓取监控轮询句柄
+
+  function stopCoursesWatch() {
+    if (coursesTimer) { clearInterval(coursesTimer); coursesTimer = null; }
+  }
+
+  function renderCoursesProgress(prog) {
+    var row = $("cg-courses-progress");
+    if (!row || !prog || !(Number(prog.total) > 0)) return;
+    var done = Number(prog.done) || 0, total = Number(prog.total);
+    var pct = Math.min(100, Math.round(done / total * 100));
+    $("cg-courses-bar").style.width = pct + "%";
+    var txt = "已读取 " + done + "/" + total + " 页(" + pct + "%)";
+    if (prog.eta_seconds != null) txt += " · 预计剩余 " + fmtEta(prog.eta_seconds);
+    $("cg-courses-progress-text").textContent = txt;
+    row.hidden = false;
+  }
+
+  function hideCoursesProgress() {
+    var row = $("cg-courses-progress");
+    if (!row) return;
+    row.hidden = true;
+    $("cg-courses-bar").style.width = "0%";
+  }
+
+  function watchCoursesGrab() {
+    stopCoursesWatch();
+    var btn = $("cg-load");
+    var started = Date.now();
+    var everRunning = false;
+    btn.disabled = true;
+    coursesTimer = setInterval(async function () {
+      // 配置界面已切换/卸载时停止监控
+      if (!document.getElementById("cg-load")) { stopCoursesWatch(); return; }
+      try {
+        var st = await grabState();
+        if (st.running) everRunning = true;
+        if (st.running) {
+          // 运行中: 渲染进度条(翻页开始前显示已用时间)
+          renderCoursesProgress(st.progress);
+          if (!(st.progress && Number(st.progress.total) > 0)) {
+            var pt = $("cg-courses-progress-text");
+            if (pt) pt.textContent = "抓取中…已用 "
+              + Math.round((Date.now() - started) / 1000) + " 秒";
+          }
+        } else if (await fetchCourses()) {
+          // 任务结束且课程缓存就绪 → 成功, 自动列出课程
+          stopCoursesWatch();
+          btn.disabled = false;
+          hideCoursesProgress();
+          Z.message("success", "专业课程抓取完成,已在下方列出,请勾选要抢的课程");
+        } else if (!st.running && (everRunning || Date.now() - started > 8000)) {
+          // 抓取进程已结束但缓存未生成 → 失败, 允许重试
+          stopCoursesWatch();
+          btn.disabled = false;
+          hideCoursesProgress();
+          var empty = $("cg-courses-empty");
+          empty.hidden = false;
+          empty.className = "zy-alert zy-error";
+          empty.textContent = "抓取已结束但课程缓存未生成(原因见下方运行日志),可点击「开始专业课程抓取」重试";
+          Z.message("error", "专业课程抓取失败,请查看运行日志后重试");
+        } else if (st.progress && st.progress.stage
+            && st.progress.stage !== "courses") {
+          // 占用进程槽位的是其他任务(如目录抓取/抢课), 不属于课程抓取监控范围
+          stopCoursesWatch();
+          btn.disabled = false;
+          hideCoursesProgress();
+        } else if (Date.now() - started > 30 * 60 * 1000) {
+          stopCoursesWatch();
+          btn.disabled = false;
+          hideCoursesProgress();
+        }
+      } catch (e) {
+        // 单轮查询失败(网络抖动等)忽略, 下一轮再试
+      }
+    }, 3000);
+  }
+
+  async function onGrabCoursesClick() {
+    var btn = $("cg-load");
+    var sp = specialtyNow();
+    if (!(sp.level.v && sp.grade.v && sp.dept.v && sp.major.v)) {
+      Z.message("warning", "请先选择完整的培养层次/年级/院(系)/部与专业");
+      return;
+    }
+    btn.disabled = true;
+    // 立即展示进度条(0% 启动态); 判空防御同目录抓取(旧版 DOM 可能缺元素)
+    var row = $("cg-courses-progress");
+    if (row) {
+      row.hidden = false;
+      $("cg-courses-bar").style.width = "0%";
+      $("cg-courses-progress-text").textContent = "正在启动抓取…";
+    }
+    try {
+      try {
+        await Z.post("plugins/course-grab/major-courses/refresh", { specialty: sp });
+      } catch (e) {
+        // 任务已在运行(如重复点击/其他抓取占用)时转为监控进度
+        if (String(e.message || "").indexOf("已在运行") < 0) throw e;
+        Z.message("info", "检测到抓取任务已在运行,正在监控进度…");
+      }
+      watchCoursesGrab();
+    } catch (e) {
+      btn.disabled = false;
+      hideCoursesProgress();
+      Z.message("error", e.message);
+    }
+  }
+
+  // ---------------- 初始化 ----------------
+  (async function init() {
+    var cfg = await Z.getConfig();
+    // 旧配置的 fetch_major 模式已移除, 统一归一化为 auto
+    $("cg-mode").value = cfg.mode === "once" ? "once" : "auto";
+    $("cg-poll").value = cfg.poll_interval != null ? cfg.poll_interval : 2;
+    $("cg-headless").checked = cfg.headless !== false;
+    $("cg-username").value = cfg.username || "";
+    $("cg-password").value = cfg.password || "";
+    picked = {};
+    Object.keys(cfg.courses || {}).forEach(function (code) {
+      var cl = cfg.courses[code];
+      picked[code] = Array.isArray(cl) ? cl.join(", ") : String(cl || "");
+    });
+    savedSp = cfg.specialty || null;
+    // 回显已保存专业: 兼容 {v,t} 对象与旧版纯字符串两种形态
+    function spVal(x) {
+      return x && typeof x === "object" ? String(x.v || "") : String(x || "");
+    }
+    var sel = savedSp && (savedSp.level || savedSp.major) ? {
+      level: spVal(savedSp.level), grade: spVal(savedSp.grade),
+      dept: spVal(savedSp.dept), major: spVal(savedSp.major),
+    } : null;
+    var ok = await loadCatalog(sel);
+    // 目录缺失/不完整时仅展示引导横幅, 由用户点击「抓取专业目录」后才开始抓取
+    if (!ok) $("cg-load").disabled = true;
+
+    // 打开页面时目录抓取已在运行(刷新/重进等): 接管进度监控而非重复发起。
+    // 仅在目录确实缺失/不完整、且进程当前任务确为目录抓取(或进度尚未上报)时接管
+    var st = await grabState();
+    var needCatalog = !ok || !!(catalog && catalog.partial);
+    if (st.running && needCatalog
+        && (!st.progress || !st.progress.stage || st.progress.stage === "catalog")) {
+      Z.message("info", "检测到专业目录抓取任务正在运行,已接管进度监控");
+      watchCatalogGrab();
+    }
+
+    // 打开页面时课程抓取已在运行(刷新/重进等): 接管进度监控
+    if (st.running && st.progress && st.progress.stage === "courses") {
+      Z.message("info", "检测到专业课程抓取任务正在运行,已接管进度监控");
+      watchCoursesGrab();
+    }
+
+    // 回显已保存专业后自动加载其课程缓存(如有)
+    maybeAutoLoad();
+
+    $("cg-level").addEventListener("change", function () {
+      fillSelect($("cg-grade"), nodeAt([$("cg-level").value]));
+      fillSelect($("cg-dept"), null);
+      fillSelect($("cg-major"), null);
+      syncLoadBtn();
+    });
+    $("cg-grade").addEventListener("change", function () {
+      fillSelect($("cg-dept"), nodeAt([$("cg-level").value, $("cg-grade").value]));
+      fillSelect($("cg-major"), null);
+      syncLoadBtn();
+    });
+    $("cg-dept").addEventListener("change", function () {
+      fillSelect($("cg-major"), nodeAt([$("cg-level").value, $("cg-grade").value, $("cg-dept").value]));
+      syncLoadBtn();
+    });
+    $("cg-major").addEventListener("change", function () {
+      // 选专业是四级联动最后一步: 此前 syncLoadBtn 只在上级 change 时调用,
+      // 手动从头选择时按钮会一直是禁用态, 这里必须同步一次
+      syncLoadBtn();
+      maybeAutoLoad();
+    });
+    $("cg-load").addEventListener("click", onGrabCoursesClick);
+    $("cg-filter").addEventListener("input", renderCourses);
+    $("cg-save").addEventListener("click", save);
+    $("cg-grab-catalog").addEventListener("click", onGrabCatalogClick);
+  })().catch(function (e) {
+    showMsg("配置界面初始化失败: " + e.message, "zy-error");
+  });
+})();
+</script>

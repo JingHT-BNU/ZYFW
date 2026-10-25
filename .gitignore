@@ -1,0 +1,30 @@
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+
+# Local runtime data: credentials, cookies, logs, caches, and screenshots
+data/
+
+# Archived scripts and captured browser state may contain plaintext secrets
+legacy/
+
+# Local collaboration and planning documents
+/AGENTS.md
+/HANDOVER.md
+/PLAN.md
+
+# Local editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Browser driver binaries and their bundled license files
+msedgedriver.exe
+Driver_Notes/
+
+# Local environment files
+.env
+.env.*
+!.env.example

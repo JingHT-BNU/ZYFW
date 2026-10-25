@@ -1,0 +1,56 @@
+{
+  "id": "course-grab",
+  "name": "教务抢课",
+  "version": "1.3.0",
+  "description": "轮询教务系统(zyfw.bnu.edu.cn)课程名额,自动选中并提交;支持多课程、多班级候选;可按专业自动获取课程列表。",
+  "entry": "plugin.py",
+  "config_ui": "ui.html",
+  "config_schema": [
+    {
+      "key": "mode",
+      "label": "运行模式",
+      "type": "choice",
+      "default": "auto",
+      "choices": ["auto", "once"],
+      "choice_labels": ["轮询选课(到名额自动提交)", "单次选课(仅提交一次)"]
+    },
+    {
+      "key": "specialty",
+      "label": "我的专业",
+      "type": "specialty",
+      "hint": "在自定义配置界面中选择专业并勾选课程;此项为所选专业的内部记录"
+    },
+    {
+      "key": "courses",
+      "label": "课程与班级",
+      "type": "course-table",
+      "hint": "课程代码 → 候选班级号列表(班级留空表示不限班级)"
+    },
+    {
+      "key": "poll_interval",
+      "label": "轮询间隔(秒)",
+      "type": "number",
+      "default": 2,
+      "min": 0.5,
+      "max": 60
+    },
+    {
+      "key": "headless",
+      "label": "无头模式",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "username",
+      "label": "统一认证账号(留空用全局)",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "key": "password",
+      "label": "统一认证密码(留空用全局)",
+      "type": "password",
+      "default": ""
+    }
+  ]
+}

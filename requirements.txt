@@ -1,0 +1,5 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+selenium>=4.20
+python-multipart>=0.0.9
+httpx2>=0.1  # starlette TestClient 依赖, 供 selftest_api 使用
