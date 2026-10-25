@@ -103,6 +103,31 @@ def _run() -> None:
         assert merged2["username"] == "plug" and merged2["password"] == "plugpw", merged2
         print("[ok] empty plugin account falls back to global account")
 
+        # 课程抓取请求契约: 配置界面发送 {"specialty": {level:{v,t},...}}。
+        # 桩掉进程启动, 只验证 API 能正确解包并传递四个专业值。
+        original_start = api_module._start_grab_task
+        captured = {}
+        try:
+            api_module._start_grab_task = (
+                lambda task, extra: captured.update(task=task, extra=extra))
+            specialty = {
+                "level": {"v": "1", "t": "本科"},
+                "grade": {"v": "2025", "t": "2025"},
+                "dept": {"v": "CU", "t": "物理与天文学院"},
+                "major": {"v": "CU105", "t": "物理学(强基计划)"},
+            }
+            r = client.post(
+                "/api/plugins/course-grab/major-courses/refresh",
+                json={"specialty": specialty})
+            assert r.status_code == 200, (r.status_code, r.text)
+            assert captured["task"] == "courses", captured
+            assert captured["extra"]["specialty"] == {
+                "level": "1", "grade": "2025", "dept": "CU", "major": "CU105",
+            }, captured
+        finally:
+            api_module._start_grab_task = original_start
+        print("[ok] specialty refresh accepts UI wrapper payload")
+
         # 5. 课程缓存读写(与插件侧同键路径)
         data = {
             "updated_at": "2026-10-13 12:00:00",

@@ -343,7 +343,10 @@ def get_major_courses(
 def refresh_major_courses(plugin_id: str, body: dict):
     if plugin_id != _GRAB_ID:
         raise HTTPException(404, f"插件不存在: {plugin_id}")
-    sel = body or {}
+    # 新版配置界面发送 {"specialty": {...}}; 保留顶层旧格式兼容。
+    sel = body.get("specialty", body) if isinstance(body, dict) else None
+    if not isinstance(sel, dict):
+        raise HTTPException(400, "专业参数格式错误")
 
     def _norm(v) -> str:
         # 兼容 {"v": 值, "t": 文本} 与纯字符串两种形态

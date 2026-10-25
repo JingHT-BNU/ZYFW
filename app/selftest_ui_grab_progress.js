@@ -37,7 +37,7 @@ function makeEl(id) {
 
 function makeZ(opts) {
   // opts: { majors: fn, plugins: fn, events: fn, courses: fn, postError: 布尔 }
-  const calls = { api: [], post: [], save: [] };
+  const calls = { api: [], post: [], postBodies: [], save: [] };
   return {
     calls,
     getConfig: async () => ({ mode: "auto", poll_interval: 2, headless: true,
@@ -60,8 +60,9 @@ function makeZ(opts) {
       if (p.indexOf("plugins/course-grab/logs") === 0) return { events: opts.events() };
       throw new Error("unexpected api: " + p);
     },
-    async post(p) {
+    async post(p, body) {
       calls.post.push(p);
+      calls.postBodies.push(body);
       if (opts.postError) throw new Error(opts.postError);
       return { ok: true };
     },
@@ -231,6 +232,14 @@ async function main() {
     (p) => p === "plugins/course-grab/major-courses/refresh");
   assert(coursePosts.length === 1,
          "课程抓取应恰好 POST 一次: " + JSON.stringify(Z6.calls.post));
+  const courseBody = Z6.calls.postBodies[Z6.calls.post.indexOf(
+    "plugins/course-grab/major-courses/refresh")];
+  assert(courseBody && courseBody.specialty
+         && courseBody.specialty.level.v === "1"
+         && courseBody.specialty.grade.v === "2025"
+         && courseBody.specialty.dept.v === "001"
+         && courseBody.specialty.major.v === "080717",
+         "课程抓取请求体缺失专业值: " + JSON.stringify(courseBody));
   assert(t6.els["cg-courses-progress"].hidden === false, "课程抓取应显示进度条");
   assert(t6.els["cg-load"].disabled === true, "抓取中按钮应禁用");
   assert(t6.intervalActive(), "课程抓取应启动监控轮询");
