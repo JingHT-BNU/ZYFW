@@ -1,8 +1,8 @@
 {
   "id": "bdata-autoplay",
   "name": "师道云刷课",
-  "version": "1.0.0",
-  "description": "登录北师大统一身份认证，自动遍历师道云课程中的视频，依据服务器观看进度与课程完成阈值倍速播放，支持多课程顺序执行。",
+  "version": "1.2.0",
+  "description": "登录北师大统一身份认证，从任务进度窗口解析必修视频并倍速播放；完成状态以页面服务器观看时长与视频总时长比较为准；服务器可记录倍速上限约为 4 倍。",
   "entry": "plugin.py",
   "config_schema": [
     {
@@ -21,10 +21,11 @@
       "key": "speedup",
       "label": "播放倍速",
       "type": "number",
-      "default": 8,
+      "default": 4,
       "min": 1,
-      "max": 16,
-      "step": 0.5
+      "max": 4,
+      "step": 0.5,
+      "hint": "服务器记录的观看进度上限约为 4 倍"
     },
     {
       "key": "completion_tolerance",
@@ -34,7 +35,7 @@
       "min": 0,
       "max": 30,
       "step": 1,
-      "hint": "服务器记录时长距课程阈值不超过该秒数时视为完成"
+      "hint": "服务器记录时长距视频总时长不超过该秒数或 1% 时视为完成"
     },
     {
       "key": "headless",

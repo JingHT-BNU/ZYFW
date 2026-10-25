@@ -209,6 +209,7 @@ finally:
 
 - 根据全局设置 `general.browser` 选择 `edge`、`firefox` 或 `chromium`。
 - 开启自动播放许可，并减少后台标签页节流。
+- 有界面模式下最大化浏览器窗口；无头模式使用 1920×1080 视口。
 - Edge 使用 `general.driver_path`；Firefox 使用 `general.geckodriver_path`；Chromium 使用 `general.chromedriver_path`。
 - Chromium 浏览器可执行文件通过 `general.chromium_path` 指定。
 - 路径留空时依次检测项目根目录的本地文件和 Selenium Manager。

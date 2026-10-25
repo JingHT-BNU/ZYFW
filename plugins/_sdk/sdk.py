@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from selenium import webdriver
-from selenium.common import TimeoutException
+from selenium.common import TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
@@ -166,6 +166,7 @@ def _add_chromium_options(opt, headless: bool) -> None:
     opt.add_argument("--autoplay-policy=no-user-gesture-required")
     opt.add_argument("--disable-background-timer-throttling")
     opt.add_argument("--disable-renderer-backgrounding")
+    opt.add_argument("--start-maximized")
     if headless:
         opt.add_argument("--headless")
         opt.add_argument("--disable-gpu")
@@ -199,9 +200,21 @@ def make_firefox_options(headless: bool = True) -> FirefoxOptions:
     opt.set_preference("dom.disable_beforeunload", True)
     if headless:
         opt.add_argument("-headless")
+        opt.add_argument("--start-maximized")
         opt.add_argument("--width=1920")
         opt.add_argument("--height=1080")
     return opt
+
+
+def _configure_window(driver, headless: bool):
+    try:
+        if headless:
+            driver.set_window_size(1920, 1080)
+        else:
+            driver.maximize_window()
+    except WebDriverException:
+        pass
+    return driver
 
 
 def make_driver(ctx: PluginContext, headless: bool | None = None):
@@ -212,11 +225,14 @@ def make_driver(ctx: PluginContext, headless: bool | None = None):
 
     if browser == BROWSER_EDGE:
         service = EdgeService(path) if path else EdgeService()
-        return webdriver.Edge(service=service, options=make_edge_options(headless))
+        driver = webdriver.Edge(
+            service=service, options=make_edge_options(headless))
+        return _configure_window(driver, headless)
     if browser == BROWSER_FIREFOX:
         service = FirefoxService(path) if path else FirefoxService()
-        return webdriver.Firefox(
+        driver = webdriver.Firefox(
             service=service, options=make_firefox_options(headless))
+        return _configure_window(driver, headless)
 
     executable = chromium_executable(ctx)
     if not executable:
@@ -224,10 +240,11 @@ def make_driver(ctx: PluginContext, headless: bool | None = None):
             "未找到 Chromium 可执行文件; 请配置 chromium_path "
             "或将 chromium_path 指向 chrome-win64/chrome.exe")
     service = ChromeService(path) if path else ChromeService()
-    return webdriver.Chrome(
+    driver = webdriver.Chrome(
         service=service,
         options=make_chromium_options(headless, executable),
     )
+    return _configure_window(driver, headless)
 
 
 def find(driver, element: str, timeout: float = 10, by=By.XPATH):

@@ -2,10 +2,9 @@
 
 站点关键行为(2026-10 实测):
 - 未登录时课程页提供“北师大统一身份认证登录”入口, 点击后进入 CAS;
-- 课程数据 /wechatapi/api/learn/getCourseData 返回目录, pid.type=2 为视频;
-- /wechatapi/api/learn/getHistory 提供每个内容项的 needFinishvideo 秒数阈值;
-- /wechatapi/api/learn/getVideoHistory 的 vt 为服务器已记录观看秒数;
-- 视频以 4x 播放 8 秒后, vt 与实际媒体进度同步增长, 可据此判定真实完成度。
+- 任务进度窗口按播放图标筛选必修视频, 选修视频无需处理;
+- 播放页时长标签会随服务器记录增长;
+- 完成判定只比较该文字与本地视频最大时长, 不使用本地 currentTime。
 """
 from __future__ import annotations
 
@@ -31,11 +30,13 @@ from selenium.webdriver.common.by import By  # noqa: E402
 
 LOGIN_HOME = "https://bdata.bnu.edu.cn/"
 COURSE_DATA_API = "/wechatapi/api/learn/getCourseData"
-HISTORY_API = "/wechatapi/api/learn/getHistory"
-VIDEO_HISTORY_API = "/wechatapi/api/learn/getVideoHistory"
-VIDEO_PART_TYPE = 2
 COOKIE_LIFE_SECONDS = 7 * 86400
 
+TASK_BUTTON_XPATH = (
+    '//*[@id="app"]/section/main/div/div[2]/div[2]/div/div/div[3]'
+    '/span/button[1]'
+)
+TASK_VIDEO_ICON_PREFIX = "M512 64a448"
 DURATION_XPATH = (
     '//*[@id="app"]/section/main/div/div[2]/div[2]/div/div[1]'
     '/div[3]/span/div/span[4]/span'
@@ -109,35 +110,6 @@ def parse_duration_seconds(text: object) -> int:
     return hours * 3600 + minutes * 60 + seconds
 
 
-def video_parts(course_data: dict) -> list[dict]:
-    """Return visible, non-hidden video entries from getCourseData."""
-    hidden = {str(v) for v in (course_data.get("hide") or [])}
-    out: list[dict] = []
-    seen: set[str] = set()
-    for item in course_data.get("cs") or []:
-        if not isinstance(item, dict):
-            continue
-        pid = item.get("pid")
-        cs_id = str(item.get("_id") or "")
-        if not isinstance(pid, dict) or not cs_id or cs_id in seen:
-            continue
-        part_id = str(pid.get("_id") or "")
-        title = normalize_title(pid.get("title"))
-        if pid.get("type") != VIDEO_PART_TYPE or not part_id or not title:
-            continue
-        if cs_id in hidden or part_id in hidden:
-            continue
-        seen.add(cs_id)
-        out.append({"cs_id": cs_id, "part_id": part_id, "title": title})
-    return out
-
-
-def completion_target(required: float, media_duration: float) -> float:
-    """Use the smaller positive course/media duration to handle rounded page tags."""
-    values = [float(v) for v in (required, media_duration) if float(v or 0) > 0]
-    return min(values) if values else 0.0
-
-
 def bounded_float(value: object, default: float, low: float, high: float) -> float:
     try:
         number = float(value)
@@ -146,10 +118,14 @@ def bounded_float(value: object, default: float, low: float, high: float) -> flo
     return min(high, max(low, number))
 
 
-def is_complete(watched: float, required: float, media_duration: float,
-                tolerance: float) -> bool:
-    target = completion_target(required, media_duration)
-    return target > 0 and watched + max(0.0, tolerance) >= target
+def completion_gap(media_duration: float, tolerance: float) -> float:
+    """Allow explicit tolerance plus 1% for whole-second server rounding."""
+    return max(max(0.0, tolerance), max(0.0, media_duration) * 0.01)
+
+
+def is_complete(watched: float, media_duration: float, tolerance: float) -> bool:
+    return (media_duration > 0
+            and watched + completion_gap(media_duration, tolerance) >= media_duration)
 
 
 def cookie_file(ctx: PluginContext) -> Path:
@@ -158,6 +134,7 @@ def cookie_file(ctx: PluginContext) -> Path:
 
 def save_cookies(ctx: PluginContext, cookies: list[dict]) -> None:
     path = cookie_file(ctx)
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -228,16 +205,109 @@ def course_data(driver, cid: str) -> dict:
     return data
 
 
-def course_history(driver, cid: str) -> dict:
-    return api_json(driver, HISTORY_API, {"cid": cid})
+def _task_video_entries(driver) -> list[dict]:
+    js = """
+    const pane = document.getElementById('pane-first');
+    if (!pane) return [];
+    const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
+    const out = [];
+    for (const span of pane.querySelectorAll('span.el-text')) {
+        const icon = span.querySelector('i > svg > path');
+        if (!icon) continue;
+        const path = icon.getAttribute('d') || '';
+        if (!path.startsWith(arguments[0])) continue;
+        const clone = span.cloneNode(true);
+        clone.querySelectorAll('.el-tag').forEach(el => el.remove());
+        const title = norm(clone.textContent);
+        const watched = Array.from(span.querySelectorAll('.el-tag__content'))
+            .map(el => norm(el.textContent))
+            .find(text => text.startsWith('观看视频')) || '';
+        if (title) out.push({title, watched});
+    }
+    return out;
+    """
+    rows = driver.execute_script(js, TASK_VIDEO_ICON_PREFIX)
+    return rows if isinstance(rows, list) else []
 
 
-def video_history(driver, cid: str, cs_id: str) -> float:
-    data = api_json(driver, VIDEO_HISTORY_API, {"cid": cid, "csId": cs_id})
+def _scroll_task_pane(driver) -> bool:
+    js = """
+    const dialog = document.querySelector('.el-dialog');
+    if (!dialog) return false;
+    const candidates = Array.from(dialog.querySelectorAll('*')).filter(el =>
+        el.scrollHeight > el.clientHeight + 10 &&
+        ['auto', 'scroll'].includes(getComputedStyle(el).overflowY));
+    if (!candidates.length) return false;
+    const el = candidates.sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 2) return false;
+    el.scrollTop = Math.min(el.scrollHeight, el.scrollTop + el.clientHeight * 0.8);
+    return true;
+    """
+    return bool(driver.execute_script(js))
+
+
+def collect_task_videos(driver) -> list[dict]:
+    """Open the task dialog and collect required videos by their play icon."""
+    button = find(driver, TASK_BUTTON_XPATH, timeout=10)
+    if button is None:
+        button = find(
+            driver,
+            '//button[contains(normalize-space(.), "查看任务进度")]',
+            timeout=5,
+        )
+    if button is None:
+        raise RuntimeError("未找到“查看任务进度”按钮")
     try:
-        return max(0.0, float(data.get("vt") or 0))
-    except (TypeError, ValueError):
-        return 0.0
+        button.click()
+    except WebDriverException:
+        driver.execute_script("arguments[0].click();", button)
+    find_strict(driver, '//*[@id="pane-first"]', timeout=15)
+
+    collected: dict[str, dict] = {}
+    for _ in range(30):
+        for row in _task_video_entries(driver):
+            title = normalize_title(row.get("title"))
+            if title:
+                collected[title] = {
+                    "title": title,
+                    "watched": normalize_title(row.get("watched")),
+                }
+        if not _scroll_task_pane(driver):
+            break
+        time.sleep(0.15)
+    close_task_dialog(driver)
+    return list(collected.values())
+
+
+def close_task_dialog(driver) -> None:
+    # 优先模拟点击遮罩空白处; 站点未关闭时回退到标题栏关闭按钮。
+    blank_js = """
+    const dialog = document.querySelector('.el-dialog');
+    const overlay = dialog && dialog.closest('.el-overlay');
+    if (!overlay) return false;
+    for (const type of ['mousedown', 'mouseup', 'click']) {
+        overlay.dispatchEvent(new MouseEvent(type, {
+            bubbles: true, cancelable: true, clientX: 5, clientY: 5
+        }));
+    }
+    return true;
+    """
+    close_js = """
+    const button = document.querySelector('.el-dialog__headerbtn');
+    if (button) button.click();
+    return true;
+    """
+    for action in (blank_js, close_js, close_js):
+        try:
+            driver.execute_script(action)
+        except WebDriverException:
+            pass
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if not driver.find_elements(By.ID, "pane-first"):
+                return
+            time.sleep(0.1)
+    raise RuntimeError("任务进度窗口未能关闭")
 
 
 def _login(ctx: PluginContext, driver, course_url: str) -> None:
@@ -308,18 +378,21 @@ def click_menu_title(driver, title: str) -> bool:
     return bool(driver.execute_script(js, title))
 
 
-def wait_current_part(driver, cid: str, cs_id: str, timeout: float = 15) -> None:
+def wait_active_menu_title(driver, title: str, timeout: float = 15) -> None:
     deadline = time.time() + timeout
-    last_error: Exception | None = None
+    target = normalize_title(title)
     while time.time() < deadline:
         try:
-            history = course_history(driver, cid).get("history") or {}
-            if str(history.get("csId") or "") == cs_id:
+            active = driver.execute_script(
+                "const el=document.querySelector('li.el-menu-item.is-active');"
+                "return el ? el.innerText : '';"
+            )
+            if normalize_title(active) == target:
                 return
-        except Exception as e:
-            last_error = e
+        except WebDriverException:
+            pass
         time.sleep(0.4)
-    raise RuntimeError(f"切换课程内容超时: {cs_id} ({last_error or '条目未激活'})")
+    raise RuntimeError(f"切换课程内容超时: {title}")
 
 
 def duration_text(driver) -> str:
@@ -398,35 +471,42 @@ def start_or_resume_video(driver, watched: float, speedup: float) -> None:
     )
 
 
-def play_until_complete(ctx: PluginContext, driver, cid: str, part: dict,
-                        required: float, watched: float, speedup: float,
+def wait_video_duration(driver, timeout: float = 20.0) -> float:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        duration = float(video_state(driver).get("duration") or 0)
+        if duration > 0:
+            return duration
+        time.sleep(0.4)
+    return 0.0
+
+
+def play_until_complete(ctx: PluginContext, driver, title: str,
+                        media_duration: float, watched: float, speedup: float,
                         tolerance: float, overall_done: int,
                         overall_total: int) -> tuple[bool, float, float]:
     deadline_wait = time.time() + 20
-    state: dict = {}
     while time.time() < deadline_wait:
-        state = video_state(driver)
-        if float(state.get("duration") or 0) > 0:
+        media_duration = float(video_state(driver).get("duration") or 0)
+        if media_duration > 0:
             break
         time.sleep(0.4)
-    if not state or not state.get("duration"):
+    if media_duration <= 0:
         return False, watched, 0.0
 
-    media_duration = float(state["duration"])
-    required = completion_target(required, media_duration)
-    if required <= 0:
-        return False, watched, media_duration
-    if watched + tolerance >= required:
+    if is_complete(watched, media_duration, tolerance):
         return True, watched, media_duration
 
     start_or_resume_video(driver, watched, speedup)
     started = time.time()
-    max_wait = max(120.0, (required - watched) / max(1.0, speedup) * 2.0 + 120.0)
-    last_server_check = 0.0
+    max_wait = max(
+        180.0, (media_duration - viewed(media_duration, watched)) / max(
+            1.0, speedup) * 2.2 + 120.0)
     last_report = 0.0
     last_media = -1.0
     stalled_rounds = 0
     server_watched = watched
+    local_ended_at: float | None = None
 
     while time.time() - started < max_wait:
         state = video_state(driver)
@@ -446,15 +526,18 @@ def play_until_complete(ctx: PluginContext, driver, cid: str, part: dict,
             )
 
         now = time.time()
-        if now - last_server_check >= 4:
-            last_server_check = now
-            try:
-                server_watched = video_history(driver, cid, part["cs_id"])
-            except RuntimeError:
-                pass
+        try:
+            label = duration_text(driver)
+            if "已完成" in label:
+                server_watched = media_duration
+            else:
+                parsed = parse_duration_seconds(label)
+                if parsed > 0 or label:
+                    server_watched = float(parsed)
+        except WebDriverException:
+            pass
 
-        target = completion_target(required, media_duration)
-        if server_watched + tolerance >= target:
+        if is_complete(server_watched, media_duration, tolerance):
             driver.execute_script(
                 "const v=document.querySelector('#player video, video');"
                 "if(v){v.pause();}")
@@ -462,31 +545,46 @@ def play_until_complete(ctx: PluginContext, driver, cid: str, part: dict,
 
         if now - last_report >= 2:
             last_report = now
-            percent = min(100.0, server_watched / target * 100) if target else 0.0
-            remain = max(0.0, target - server_watched) / max(1.0, speedup)
+            percent = min(100.0, server_watched / media_duration * 100)
+            remain = max(0.0, media_duration - server_watched) / max(1.0, speedup)
             ctx.progress(
-                done=overall_done, total=overall_total, title=part["title"],
+                done=overall_done, total=overall_total, title=title,
                 watched_seconds=round(server_watched, 1),
-                required_seconds=round(target, 1),
+                required_seconds=round(media_duration, 1),
                 percent=round(percent, 1), eta_seconds=round(remain),
             )
 
+        if state.get("ended"):
+            local_ended_at = local_ended_at or now
+        else:
+            local_ended_at = None
         if current <= last_media + 0.05:
             stalled_rounds += 1
         else:
             stalled_rounds = 0
             last_media = current
-        if stalled_rounds >= 15:
+        if stalled_rounds >= 15 and not state.get("ended"):
             start_or_resume_video(driver, server_watched, speedup)
             stalled_rounds = 0
+        if local_ended_at is not None and now - local_ended_at > 30:
+            break
         time.sleep(1.0)
 
     try:
-        server_watched = video_history(driver, cid, part["cs_id"])
-    except RuntimeError:
+        label = duration_text(driver)
+        if "已完成" in label:
+            server_watched = media_duration
+        else:
+            server_watched = float(parse_duration_seconds(label))
+    except WebDriverException:
         pass
-    return is_complete(server_watched, required, media_duration, tolerance), \
+    return is_complete(server_watched, media_duration, tolerance), \
         server_watched, media_duration
+
+
+def viewed(media_duration: float, watched: float) -> float:
+    """Clamp server time for max-wait calculation only."""
+    return min(max(0.0, media_duration), max(0.0, watched))
 
 
 def run_course(ctx: PluginContext, driver, course_url: str, cid: str,
@@ -495,64 +593,58 @@ def run_course(ctx: PluginContext, driver, course_url: str, cid: str,
     driver.get(course_url)
     data = course_data(driver, cid)
     title = normalize_title(data.get("title")) or cid
-    history = course_history(driver, cid)
-    thresholds = history.get("newTaskData") or {}
-    parts = video_parts(data)
-    ctx.log(f"[{course_index}/{course_total}] {title}: 发现 {len(parts)} 个视频")
-    ctx.progress(done=0, total=len(parts), course=title)
+    videos = collect_task_videos(driver)
+    ctx.log(
+        f"[{course_index}/{course_total}] {title}: "
+        f"任务中共有 {len(videos)} 个必修视频")
+    ctx.progress(done=0, total=len(videos), course=title)
 
     completed = 0
-    for index, part in enumerate(parts, start=1):
-        ctx.status(f"正在检查: {part['title']}")
+    for index, video in enumerate(videos, start=1):
+        video_title = video["title"]
+        ctx.status(f"正在检查: {video_title}")
         try:
-            watched = video_history(driver, cid, part["cs_id"])
-            task = thresholds.get(part["cs_id"]) or {}
-            try:
-                required = float(task.get("needFinishvideo") or 0)
-            except (TypeError, ValueError):
-                required = 0.0
-
-            if not click_menu_title(driver, part["title"]):
-                ctx.log(f"跳过(目录中未找到): {part['title']}")
+            if not click_menu_title(driver, video_title):
+                ctx.log(f"跳过(目录中未找到): {video_title}")
                 continue
-            wait_current_part(driver, cid, part["cs_id"])
+            wait_active_menu_title(driver, video_title)
             time.sleep(0.8)
 
-            media_duration = float(video_state(driver).get("duration") or 0)
+            media_duration = wait_video_duration(driver)
+            if media_duration <= 0:
+                raise RuntimeError("视频时长不可用")
             page_label = wait_duration_label(driver)
-            page_required = parse_duration_seconds(page_label)
-            # 部分交互视频的接口阈值是 1 秒哨兵值, 页面时长和媒体时长更可靠。
-            api_required = required if required > 2 else 0.0
-            effective_required = page_required or api_required or media_duration
-            target = completion_target(effective_required, media_duration)
+            watched = float(parse_duration_seconds(page_label))
             page_complete = "已完成" in page_label
-            if only_unfinished and (page_complete or is_complete(
-                    watched, effective_required, media_duration, tolerance)):
+            if only_unfinished and (
+                    page_complete or is_complete(
+                        watched, media_duration, tolerance)):
                 ctx.log(
-                    f"跳过已完成视频({watched:.0f}/{target:.0f}s): {part['title']}")
+                    f"跳过已完成视频({watched:.0f}/{media_duration:.0f}s): "
+                    f"{video_title}")
             else:
                 ok, watched, media_duration = play_until_complete(
-                    ctx, driver, cid, part, effective_required, watched, speedup,
-                    tolerance, completed, len(parts))
+                    ctx, driver, video_title, media_duration, watched, speedup,
+                    tolerance, completed, len(videos))
                 if not ok:
                     raise RuntimeError(
-                        f"播放未达到完成阈值({watched:.0f}s): {part['title']}")
+                        f"服务器录制进度未达到视频时长"
+                        f"({watched:.0f}/{media_duration:.0f}s): {video_title}")
 
             completed += 1
             ctx.status(
-                f"完成 {index}/{len(parts)}: {part['title']}",
+                f"完成 {index}/{len(videos)}: {video_title}",
                 watched_seconds=round(watched, 1),
             )
             ctx.progress(
-                done=completed, total=len(parts), title=part["title"],
+                done=completed, total=len(videos), title=video_title,
                 watched_seconds=round(watched, 1),
-                required_seconds=round(
-                    completion_target(effective_required, media_duration), 1),
+                required_seconds=round(media_duration, 1),
             )
         except Exception as e:
-            ctx.log(f"视频处理失败: {part['title']}: {e!r}")
-            ctx.progress(done=completed, total=len(parts), title=part["title"])
-    return completed, len(parts)
+            ctx.log(f"视频处理失败: {video_title}: {e!r}")
+            ctx.progress(done=completed, total=len(videos), title=video_title)
+    return completed, len(videos)
 
 
 def main() -> None:
@@ -577,7 +669,7 @@ def main() -> None:
         ctx.log("未配置统一认证账号(需在全局设置或插件配置中填写),退出")
         return
 
-    speedup = bounded_float(ctx.cfg("speedup", 8), 8.0, 1.0, 16.0)
+    speedup = bounded_float(ctx.cfg("speedup", 4), 4.0, 1.0, 4.0)
     tolerance = bounded_float(ctx.cfg("completion_tolerance", 3), 3.0, 0.0, 30.0)
     only_unfinished = bool(ctx.cfg("only_unfinished", True))
     headless = bool(ctx.cfg("headless", True))
