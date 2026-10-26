@@ -23,7 +23,7 @@ global_config = GlobalConfig()
 runner = Runner()
 pm = PluginManager(runner)
 _BDATA_ID = "bdata-autoplay"
-_BDATA_TASK_CACHE_VERSION = 3
+_BDATA_TASK_CACHE_VERSION = 4
 
 # ---------------- 窗口关闭自动退出 ----------------
 # 页面通过 WebSocket 保持连接;所有客户端断开且宽限期内无人重连(如页面刷新)时,
@@ -79,6 +79,7 @@ def _effective_plugin_config(plugin: dict, cfg: dict) -> dict:
     """合并全局配置:插件账号留空时回退到全局统一身份认证账号。
 
     合并结果同时写入 account 与顶层 username/password(插件运行时读取后者)。
+    BNU刷课固定使用全局账号,忽略旧版插件内保存的凭据。
     注意必须直接赋值而非 setdefault: 配置界面保存的 username/password 键总是
     存在(留空=用全局, 存的是空串), setdefault 遇到空串占位不会覆盖,
     会导致全局账号永远合并不进去。
@@ -90,6 +91,10 @@ def _effective_plugin_config(plugin: dict, cfg: dict) -> dict:
         src = {}
     plugin_username = src.get("username") or effective.get("username") or ""
     plugin_password = src.get("password") or effective.get("password") or ""
+    if plugin.get("id") == _BDATA_ID:
+        # The unified BNU plugin always uses the global unified-auth account.
+        plugin_username = ""
+        plugin_password = ""
     gsrc = g.get("account")
     if not isinstance(gsrc, dict):
         gsrc = {}

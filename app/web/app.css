@@ -412,6 +412,59 @@ html, body, #app {
   color: var(--zyfw-text-secondary);
   font-size: 12px;
 }
+.bnu-platform {
+  display: inline-flex;
+  align-items: center;
+  min-width: 56px;
+  justify-content: center;
+  padding: 1px 8px;
+  border: 1px solid var(--zyfw-border);
+  border-radius: 999px;
+  color: var(--zyfw-text-secondary);
+  font-size: 11px;
+}
+.bnu-platform.spoc { color: var(--zyfw-accent-2); }
+.bnu-platform.bdata { color: var(--zyfw-accent); }
+.bnu-worker-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.bnu-worker {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--zyfw-border);
+  border-radius: 8px;
+  background: var(--zyfw-log-bg);
+}
+.bnu-worker-head,
+.bnu-worker-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bnu-worker-head {
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+.bnu-worker-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+.bnu-worker-meta {
+  flex-wrap: wrap;
+  margin-top: 6px;
+  color: var(--zyfw-text-secondary);
+  font-size: 11px;
+}
+@media (max-width: 860px) {
+  .bnu-worker-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .zy-btn {
   height: 32px;
   padding: 0 16px;

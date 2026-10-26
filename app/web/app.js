@@ -414,6 +414,10 @@
       async function startPlugin(id) {
         try {
           if (id === "bdata-autoplay") {
+            if (typeof window.ZyfwBnuSave === "function") {
+              const saved = await window.ZyfwBnuSave();
+              if (!saved) return;
+            }
             const data = await api("/plugins/" + id + "/config");
             const cfg = data.config || {};
             const fullAuto = cfg.full_auto === true
@@ -421,7 +425,7 @@
             if (fullAuto) {
               try {
                 await El.ElMessageBox.confirm(
-                  "当前已开启全自动模式。模型生成的测验答案、课程评论和回复将不再经过人工核验，确认后可能直接提交到课程平台。请确认你已检查模型、提示词和操作范围。",
+                  "当前 BNU刷课已开启全自动模式。模型生成的师道云测验答案、课程评论和回复将不再经过人工核验，确认后可能直接提交。请确认你已检查模型、提示词和操作范围。",
                   "危险：全自动提交",
                   {
                     type: "warning",
@@ -801,13 +805,13 @@
     <template v-if="state.page==='settings' && state.globalConfig">
       <div class="page-header">
         <h1>全局设置</h1>
-        <p>北师大统一身份认证账号(教务系统 / SPOC 通用);凭据使用 Fernet 加密存储,某平台密码不同可在对应插件配置中单独覆盖</p>
+        <p>北师大统一身份认证账号；BNU刷课固定使用这里的凭据同时登录师道云和 SPOC。凭据使用 Fernet 加密存储。</p>
       </div>
       <div class="panel">
         <h2><el-icon><user /></el-icon> 统一身份认证账号</h2>
         <el-form label-width="90px" style="max-width:560px">
           <el-form-item label="学号">
-            <el-input v-model="state.globalConfig.account.username" placeholder="如 202511101008" />
+            <el-input v-model="state.globalConfig.account.username" placeholder="请输入北师大统一身份认证学号" />
           </el-form-item>
           <el-form-item label="密码">
             <el-input v-model="state.globalConfig.account.password" type="password" show-password placeholder="已加密存储" />
@@ -840,7 +844,7 @@
           <el-form-item label="默认无头模式">
             <el-switch v-model="state.globalConfig.general.headless_default" />
           </el-form-item>
-          <el-form-item label="SPOC 默认并发">
+          <el-form-item label="BNU刷课默认并发">
             <el-input-number v-model="state.globalConfig.general.spoc_workers" :min="1" :max="32" />
           </el-form-item>
           <el-form-item label="默认播放倍速">
@@ -961,7 +965,8 @@
           <div v-for="(l, i) in (state.logs[detailPlugin.id] || [])" :key="i" class="log-line" :class="l.cls">{{ l.line }}</div>
         </div>
         <!-- 每线程工作面板 -->
-        <div class="worker-panels" v-if="workerList(detailPlugin.id).length">
+        <div class="worker-panels"
+          v-if="detailPlugin.id !== 'bdata-autoplay' && workerList(detailPlugin.id).length">
           <div class="worker-panel" v-for="w in workerList(detailPlugin.id)" :key="w.id">
             <div class="wp-head">
               <el-tag size="small" :type="workerTagType(w.status)">进程 #{{ w.id }}</el-tag>

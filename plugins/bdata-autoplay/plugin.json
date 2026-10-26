@@ -1,8 +1,8 @@
 {
   "id": "bdata-autoplay",
-  "name": "师道云刷课",
-  "version": "3.1.0",
-  "description": "将师道云刷课、测验、评论和回复合并为单一任务；自动读取当前统一认证账号的全部课程并缓存任务完成情况，支持按课程与任务范围执行、自动答题/互动以及需要每次启动确认的全自动模式。",
+  "name": "BNU刷课",
+  "version": "4.0.0",
+  "description": "使用全局北师大统一认证账号统一管理师道云与 SPOC 课程，支持课程详情缓存、章节筛选、混合并发刷课，以及师道云自动答题和评论回复。",
   "entry": "plugin.py",
   "config_ui": "ui.html",
   "config_schema": [
@@ -95,18 +95,6 @@
       "label": "无头模式",
       "type": "bool",
       "default": true
-    },
-    {
-      "key": "username",
-      "label": "统一认证账号(留空用全局)",
-      "type": "string",
-      "default": ""
-    },
-    {
-      "key": "password",
-      "label": "统一认证密码(留空用全局)",
-      "type": "password",
-      "default": ""
     },
     {
       "key": "api_url",

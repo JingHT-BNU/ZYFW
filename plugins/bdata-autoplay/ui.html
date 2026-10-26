@@ -1,113 +1,91 @@
-<div class="zy-config" id="bdata-ui">
+<div class="zy-config" id="bnu-ui">
   <div class="zy-alert zy-warn">
-    刷课、测验和评论回复已合并为一个任务。默认情况下，模型生成内容必须人工核验；
-    开启全自动模式后将跳过核验并直接提交，每次启动都会再次弹窗警告。
-    请填写支持 OpenAI Chat Completions 与工具调用（function/tool calling）的服务地址。
+    BNU刷课使用全局设置中的北师大统一身份认证账号，分别登录师道云和 SPOC。
+    首次使用或切换账号后，请先获取课程详情。师道云的模型生成内容默认需要人工核验。
   </div>
 
   <div class="zy-row">
-    <button class="zy-btn zy-primary" id="bdata-save">保存配置</button>
-    <span class="zy-hint">保存后启动插件，按所选课程与任务范围执行。</span>
+    <button class="zy-btn zy-primary" id="bnu-refresh">获取课程详情</button>
+    <button class="zy-btn" id="bnu-save">保存设置</button>
+    <span class="zy-hint" id="bnu-cache-meta">尚未读取课程缓存</span>
   </div>
 
   <div class="zy-alert">
-    <div class="zy-row">
-      <button class="zy-btn zy-primary" id="bdata-refresh-tasks">刷新课程任务缓存</button>
-      <span class="zy-hint" id="bdata-cache-meta">尚未读取任务缓存</span>
-    </div>
-    <div class="zy-hint">
-      缓存按北师大统一认证账号隔离，并自动读取账号下的全部课程、任务完成情况、
-      视频、测试、评论回复要求和任务外视频。更换账号后请再次刷新。
-    </div>
-    <div id="bdata-course-plans" class="bdata-course-plans">
-      <div class="zy-hint">正在读取任务缓存…</div>
+    <div id="bnu-course-plans" class="bdata-course-plans">
+      <div class="zy-hint">正在读取课程缓存…</div>
     </div>
   </div>
 
   <div class="zy-row">
     <div class="zy-field">
-      <label>统一认证账号（留空用全局）</label>
-      <input type="text" id="bdata-username" autocomplete="off">
+      <label>运行设置</label>
+      <label class="zy-hint"><input type="checkbox" id="bnu-headless"> 无头模式</label>
+      <label class="zy-hint"><input type="checkbox" id="bnu-unfinished"> 只处理未完成视频</label>
     </div>
     <div class="zy-field">
-      <label>统一认证密码（留空用全局）</label>
-      <input type="password" id="bdata-password" autocomplete="new-password">
+      <label>并发浏览器数</label>
+      <input type="number" id="bnu-workers" min="1" step="1">
     </div>
     <div class="zy-field">
-      <label>浏览器</label>
-      <label class="zy-hint"><input type="checkbox" id="bdata-headless"> 无头模式</label>
+      <label>播放倍速</label>
+      <input type="number" id="bnu-speedup" min="1" max="3" step="0.5">
+    </div>
+    <div class="zy-field">
+      <label>完成容差（秒）</label>
+      <input type="number" id="bnu-tolerance" min="0" max="30" step="1">
+      <span class="zy-hint">仅对师道云生效</span>
     </div>
   </div>
 
-  <div id="bdata-study-settings">
+  <div class="zy-row">
+    <div class="zy-field">
+      <label>自动化能力（仅师道云）</label>
+      <label class="zy-hint"><input type="checkbox" id="bnu-auto-answer"> 自动答题</label>
+      <label class="zy-hint"><input type="checkbox" id="bnu-comment-reply"> 评论回复</label>
+    </div>
+  </div>
+
+  <div id="bnu-qa-settings" hidden>
     <div class="zy-row">
       <div class="zy-field">
-        <label>并发浏览器数</label>
-        <input type="number" id="bdata-workers" min="1" step="1">
-      </div>
-      <div class="zy-field">
-        <label>播放倍速</label>
-        <input type="number" id="bdata-speedup" min="1" max="3" step="0.5">
-      </div>
-      <div class="zy-field">
-        <label>完成容差（秒）</label>
-        <input type="number" id="bdata-tolerance" min="0" max="30" step="1">
-      </div>
-      <div class="zy-field">
-        <label>任务筛选</label>
+        <label>提交方式</label>
         <label class="zy-hint">
-          <input type="checkbox" id="bdata-unfinished"> 只处理未完成视频
+          <input type="checkbox" id="bnu-full-auto"> 全自动模式（跳过人工核验）
         </label>
       </div>
     </div>
-  </div>
-
-  <div class="zy-row">
-    <div class="zy-field">
-      <label>自动化能力</label>
-      <label class="zy-hint"><input type="checkbox" id="bdata-auto-answer"> 自动答题</label>
-      <label class="zy-hint"><input type="checkbox" id="bdata-comment-reply"> 评论回复</label>
+    <div class="zy-alert zy-error" id="bnu-full-auto-warning" hidden>
+      危险：全自动模式会把模型生成的测验答案、评论和回复直接提交。
+      每次启动任务前仍会强制弹窗确认。
     </div>
-    <div class="zy-field">
-      <label>提交方式</label>
-      <label class="zy-hint">
-        <input type="checkbox" id="bdata-full-auto" disabled> 全自动模式（跳过人工核验）
-      </label>
-    </div>
-  </div>
-  <div class="zy-alert zy-error" id="bdata-full-auto-warning" hidden>
-    危险：全自动模式会把模型生成的测验答案、评论和回复直接提交。每次启动任务前仍会强制弹窗确认。
-  </div>
-
-  <div id="bdata-qa-settings">
     <div class="zy-row">
       <div class="zy-field bdata-wide">
         <label>OpenAI Chat 兼容 API 地址</label>
-        <input type="text" id="bdata-api-url" placeholder="https://api.deepseek.com">
+        <input type="text" id="bnu-api-url" placeholder="https://api.deepseek.com">
       </div>
     </div>
     <div class="zy-row">
       <div class="zy-field bdata-wide">
         <label>API Key（加密保存）</label>
-        <input type="password" id="bdata-api-key" autocomplete="new-password"
+        <input type="password" id="bnu-api-key" autocomplete="new-password"
           placeholder="已加密存储">
       </div>
       <div class="zy-field">
         <label>模型 ID</label>
-        <input type="text" id="bdata-model-id" placeholder="deepseek-flash">
+        <input type="text" id="bnu-model-id" placeholder="deepseek-flash">
       </div>
     </div>
     <div class="zy-row">
       <div class="zy-field">
         <label>量表答题策略</label>
-        <select id="bdata-survey-strategy">
+        <select id="bnu-survey-strategy">
           <option value="fixed">固定正负策略</option>
           <option value="normal">正态分布策略</option>
         </select>
       </div>
-      <div class="zy-field" id="bdata-survey-fixed">
+      <div class="zy-field" id="bnu-survey-fixed">
         <label>正向题固定选择</label>
-        <select id="bdata-survey-positive">
+        <select id="bnu-survey-positive">
           <option value="0">非常不同意</option>
           <option value="1">不同意</option>
           <option value="2">一般</option>
@@ -115,9 +93,9 @@
           <option value="4">非常同意</option>
         </select>
       </div>
-      <div class="zy-field" id="bdata-survey-negative-field">
+      <div class="zy-field" id="bnu-survey-negative-field">
         <label>负向题固定选择</label>
-        <select id="bdata-survey-negative">
+        <select id="bnu-survey-negative">
           <option value="0">非常不同意</option>
           <option value="1">不同意</option>
           <option value="2">一般</option>
@@ -126,29 +104,36 @@
         </select>
       </div>
     </div>
-    <div class="zy-hint" id="bdata-survey-normal-hint" hidden>
-      正态分布策略以“一般”为均值，约 2 倍标准差映射为“同意/不同意”，
+    <div class="zy-hint" id="bnu-survey-normal-hint" hidden>
+      以“一般”为均值，约 2 倍标准差映射为“同意/不同意”，
       约 3 倍标准差映射为“非常同意/非常不同意”；每题独立随机选择。
     </div>
     <div class="zy-hint">
-      启用“自动答题”或“评论回复”后需要模型配置。模型使用工具调用返回答案；
-      量表题由所选策略自动填写，不会出现在答案核验区，也不需要逐题确认。
+      量表题自动填写且不出现在核验区。SPOC 自动答题暂未开发。
     </div>
   </div>
 
-  <div class="zy-alert zy-warn" id="bdata-review" hidden>
-    <strong id="bdata-review-title">等待核验</strong>
-    <div class="zy-hint" id="bdata-review-meta"></div>
-    <div class="zy-review-context" id="bdata-review-context"></div>
-    <div class="zy-review-fields" id="bdata-review-fields"></div>
+  <div class="zy-alert zy-warn" id="bnu-review" hidden>
+    <strong id="bnu-review-title">等待核验</strong>
+    <div class="zy-hint" id="bnu-review-meta"></div>
+    <div class="zy-review-context" id="bnu-review-context"></div>
+    <div class="zy-review-fields" id="bnu-review-fields"></div>
     <div class="zy-row">
-      <button class="zy-btn zy-primary" id="bdata-approve">确认并提交</button>
-      <button class="zy-btn" id="bdata-skip">跳过本项</button>
+      <button class="zy-btn zy-primary" id="bnu-approve">确认并提交</button>
+      <button class="zy-btn" id="bnu-skip">跳过本项</button>
       <span class="zy-hint">请先修改需要调整的答案，再确认提交。</span>
     </div>
   </div>
 
-  <div class="zy-alert" id="bdata-msg" hidden></div>
+  <div id="bnu-progress-panel" hidden>
+    <div class="zy-row">
+      <strong>刷课分线程进度</strong>
+      <span class="zy-hint" id="bnu-overall-progress"></span>
+    </div>
+    <div class="bnu-worker-grid" id="bnu-workers"></div>
+  </div>
+
+  <div class="zy-alert" id="bnu-msg" hidden></div>
 </div>
 
 <script>
@@ -157,334 +142,412 @@
   var Z = window.ZyfwConfigUI;
   if (!Z) return;
   var $ = function (id) { return document.getElementById(id); };
+  var pluginId = "bdata-autoplay";
+  var configuredPlans = {};
   var requestId = "";
   var currentFields = [];
   var sending = false;
-  var taskCache = null;
   var cacheTimer = null;
+  var progressTimer = null;
+  var saveTimer = null;
+  var latestProgress = null;
 
   function showMsg(text, cls) {
-    var el = $("bdata-msg");
+    var el = $("bnu-msg");
     if (!el) return;
     el.textContent = text;
     el.className = "zy-alert" + (cls ? " " + cls : "");
     el.hidden = false;
   }
 
-  function collectCoursePlans() {
+  function platformName(course) {
+    return course.platform === "spoc" ? "SPOC" : "师道云";
+  }
+
+  function courseSummary(course) {
+    var completion = course.completion || {};
+    if (course.platform === "spoc") {
+      return "视频 " + (completion.videos_complete || 0) + "/" +
+        (completion.videos || (course.videos || []).length) +
+        " · 作业/测试 " + (course.assignments || []).length;
+    }
+    return "任务 " + (completion.tasks_complete || 0) + "/" +
+      (completion.tasks || (course.tasks || []).length) +
+      " · 任务外视频 " + (course.extra_videos || []).length;
+  }
+
+  function taskSummary(task) {
+    var completion = task.completion || {};
+    var parts = [completion.complete ? "已完成" : "未完成"];
+    if (completion.video_percent !== null
+        && completion.video_percent !== undefined) {
+      parts.push("视频 " + completion.video_percent + "%");
+    }
+    ["questionnaires", "comments", "replies"].forEach(function (key) {
+      var item = completion[key];
+      if (!item || item.total === undefined) return;
+      var label = key === "questionnaires" ? "问卷"
+        : key === "comments" ? "评论" : "回复";
+      parts.push(label + " " + item.done + "/" + item.total);
+    });
+    if ((task.videos || []).length) {
+      parts.push("视频 " + task.videos.length);
+    }
+    if ((task.tests || []).length) {
+      parts.push("测试 " + task.tests.length);
+    }
+    return parts.join(" · ");
+  }
+
+  function choiceRow(className, value, title, detail) {
+    var label = document.createElement("label");
+    label.className = "bdata-task-option";
+    var input = document.createElement("input");
+    input.type = "checkbox";
+    input.className = className;
+    input.value = value;
+    label.appendChild(input);
+    var copy = document.createElement("span");
+    copy.className = "bdata-task-copy";
+    var head = document.createElement("span");
+    head.className = "bdata-task-title";
+    head.textContent = title;
+    copy.appendChild(head);
+    if (detail) {
+      var meta = document.createElement("span");
+      meta.className = "bdata-task-meta";
+      meta.textContent = detail;
+      copy.appendChild(meta);
+    }
+    label.appendChild(copy);
+    return label;
+  }
+
+  function makeCoursePlan(course, plan) {
+    plan = plan && typeof plan === "object" ? plan : {};
+    var availableTaskIds = (course.tasks || []).map(function (task) {
+      return String(task.id);
+    });
+    var availableChapterIds = (course.chapters || []).map(function (chapter) {
+      return String(chapter.id);
+    });
+    if (plan.scope === "selected"
+        && !(plan.task_ids || []).some(function (id) {
+          return availableTaskIds.indexOf(String(id)) >= 0;
+        })) {
+      plan = Object.assign({}, plan, {scope: "all"});
+    }
+    if (plan.scope === "chapters"
+        && !(plan.chapter_ids || []).some(function (id) {
+          return availableChapterIds.indexOf(String(id)) >= 0;
+        })) {
+      plan = Object.assign({}, plan, {scope: "all"});
+    }
+    var card = document.createElement("div");
+    card.className = "bdata-course-plan";
+    card.setAttribute("data-course-id", course.id);
+
+    var head = document.createElement("div");
+    head.className = "zy-row bdata-plan-head";
+    var titleLabel = document.createElement("label");
+    titleLabel.className = "bdata-plan-title";
+    var enabled = document.createElement("input");
+    enabled.type = "checkbox";
+    enabled.className = "bnu-course-enabled";
+    enabled.checked = plan.enabled !== false;
+    titleLabel.appendChild(enabled);
+    var title = document.createElement("strong");
+    title.textContent = course.title || course.cid || "未命名课程";
+    titleLabel.appendChild(title);
+    var platform = document.createElement("span");
+    platform.className = "bnu-platform " + course.platform;
+    platform.textContent = platformName(course);
+    titleLabel.appendChild(platform);
+    head.appendChild(titleLabel);
+    var meta = document.createElement("span");
+    meta.className = "zy-hint";
+    meta.textContent = courseSummary(course);
+    head.appendChild(meta);
+    card.appendChild(head);
+
+    var scope = document.createElement("select");
+    scope.className = "bnu-course-scope";
+    var choices = course.platform === "spoc" ? [
+      ["all", "刷全部课程"],
+      ["chapters", "刷指定章节"]
+    ] : [
+      ["selected", "刷指定任务"],
+      ["all", "刷全部任务"],
+      ["all_extra", "全部任务 + 任务外视频"],
+      ["chapters", "刷指定章节"]
+    ];
+    choices.forEach(function (entry) {
+      var option = document.createElement("option");
+      option.value = entry[0];
+      option.textContent = entry[1];
+      option.selected = (plan.scope || "all") === entry[0];
+      scope.appendChild(option);
+    });
+    head.appendChild(scope);
+
+    var taskList = document.createElement("div");
+    taskList.className = "bdata-task-list";
+    var taskIds = Array.isArray(plan.task_ids) ? plan.task_ids.map(String) : [];
+    (course.tasks || []).forEach(function (task) {
+      var row = choiceRow(
+        "bnu-task-check", String(task.id),
+        task.description || task.name || "未命名任务",
+        taskSummary(task));
+      row.querySelector("input").checked = taskIds.indexOf(String(task.id)) >= 0;
+      taskList.appendChild(row);
+    });
+    card.appendChild(taskList);
+
+    var chapterList = document.createElement("div");
+    chapterList.className = "bdata-task-list";
+    var chapterIds = Array.isArray(plan.chapter_ids)
+      ? plan.chapter_ids.map(String) : [];
+    (course.chapters || []).forEach(function (chapter) {
+      var videos = chapter.videos || [];
+      var row = choiceRow(
+        "bnu-chapter-check", String(chapter.id),
+        chapter.name || "未命名章节",
+        "视频 " + videos.length);
+      row.querySelector("input").checked =
+        chapterIds.indexOf(String(chapter.id)) >= 0;
+      chapterList.appendChild(row);
+    });
+    card.appendChild(chapterList);
+
+    function syncVisibleLists() {
+      taskList.hidden = scope.value !== "selected";
+      chapterList.hidden = scope.value !== "chapters";
+    }
+    scope.addEventListener("change", syncVisibleLists);
+    scope.addEventListener("change", scheduleSave);
+    enabled.addEventListener("change", function () {
+      card.classList.toggle("is-disabled", !enabled.checked);
+      scheduleSave();
+    });
+    card.querySelectorAll(".bdata-task-option input").forEach(function (input) {
+      input.addEventListener("change", scheduleSave);
+    });
+    syncVisibleLists();
+    card.classList.toggle("is-disabled", !enabled.checked);
+    return card;
+  }
+
+  function renderCourses(data, plans) {
+    configuredPlans = plans || {};
+    var root = $("bnu-course-plans");
+    root.textContent = "";
+    var courses = Object.values((data && data.courses) || {});
+    var hiddenEmpty = 0;
+    var visible = courses.filter(function (course) {
+      if (course.platform === "spoc" && !course.has_tasks) {
+        hiddenEmpty += 1;
+        return false;
+      }
+      return true;
+    }).sort(function (a, b) {
+      if (a.platform !== b.platform) return a.platform === "spoc" ? -1 : 1;
+      return String(a.title || "").localeCompare(String(b.title || ""), "zh-CN");
+    });
+    if (!visible.length) {
+      var empty = document.createElement("div");
+      empty.className = "zy-hint";
+      empty.textContent = "当前账号尚无可用课程缓存，请点击“获取课程详情”。";
+      root.appendChild(empty);
+    } else {
+      visible.forEach(function (course) {
+        var plan = configuredPlans[course.id];
+        if (!plan && course.cid) plan = configuredPlans[course.cid];
+        root.appendChild(makeCoursePlan(course, plan));
+      });
+    }
+    var account = data && data.account ? "账号 " + data.account + " · " : "";
+    var updated = data && data.updated_at ? "更新于 " + data.updated_at : "尚未缓存";
+    var emptyText = hiddenEmpty ? " · SPOC 无任务课程 " + hiddenEmpty + " 门已隐藏" : "";
+    $("bnu-cache-meta").textContent = account + updated +
+      " · 可选课程 " + visible.length + " 门" + emptyText;
+  }
+
+  function collectPlans() {
     var plans = {};
     document.querySelectorAll(".bdata-course-plan").forEach(function (card) {
-      var cid = card.getAttribute("data-cid");
-      if (!cid) return;
-      var enabled = card.querySelector(".bdata-course-enabled");
-      var scope = card.querySelector(".bdata-course-scope");
-      var checkedTasks = Array.from(
-        card.querySelectorAll(".bdata-task-check:checked")
-      ).map(function (input) { return input.value; });
-      plans[cid] = {
-        enabled: !!(enabled && enabled.checked),
-        scope: scope ? scope.value : "all",
-        task_ids: checkedTasks
+      var courseId = card.getAttribute("data-course-id");
+      if (!courseId) return;
+      plans[courseId] = {
+        enabled: card.querySelector(".bnu-course-enabled").checked,
+        scope: card.querySelector(".bnu-course-scope").value,
+        task_ids: Array.from(
+          card.querySelectorAll(".bnu-task-check:checked")
+        ).map(function (input) { return input.value; }),
+        chapter_ids: Array.from(
+          card.querySelectorAll(".bnu-chapter-check:checked")
+        ).map(function (input) { return input.value; })
       };
     });
     return plans;
   }
 
-  function collectConfig() {
-    return {
-      course_plans: collectCoursePlans(),
-      auto_answer: $("bdata-auto-answer").checked,
-      comment_reply: $("bdata-comment-reply").checked,
-      full_auto: $("bdata-full-auto").checked,
-      only_unfinished: $("bdata-unfinished").checked,
-      workers: Math.max(1, Number($("bdata-workers").value) || 1),
-      speedup: Math.min(3, Math.max(1, Number($("bdata-speedup").value) || 3)),
-      completion_tolerance: Math.max(0, Number($("bdata-tolerance").value) || 3),
-      headless: $("bdata-headless").checked,
-      username: $("bdata-username").value,
-      password: $("bdata-password").value,
-      api_url: $("bdata-api-url").value.trim(),
-      api_key: $("bdata-api-key").value,
-      model_id: $("bdata-model-id").value.trim(),
-      survey_strategy: $("bdata-survey-strategy").value,
-      survey_positive_value: $("bdata-survey-positive").value,
-      survey_negative_value: $("bdata-survey-negative").value
+  function collectConfig(validate) {
+    var cfg = {
+      course_plans: collectPlans(),
+      auto_answer: $("bnu-auto-answer").checked,
+      comment_reply: $("bnu-comment-reply").checked,
+      full_auto: $("bnu-full-auto").checked,
+      only_unfinished: $("bnu-unfinished").checked,
+      workers: Math.max(1, Number($("bnu-workers").value) || 1),
+      speedup: Math.min(3, Math.max(1, Number($("bnu-speedup").value) || 3)),
+      completion_tolerance: Math.max(
+        0, Number($("bnu-tolerance").value) || 0),
+      headless: $("bnu-headless").checked,
+      api_url: $("bnu-api-url").value.trim(),
+      api_key: $("bnu-api-key").value,
+      model_id: $("bnu-model-id").value.trim(),
+      survey_strategy: $("bnu-survey-strategy").value,
+      survey_positive_value: $("bnu-survey-positive").value,
+      survey_negative_value: $("bnu-survey-negative").value
     };
+    if (!validate) return cfg;
+    var enabled = Object.keys(cfg.course_plans).filter(function (id) {
+      var plan = cfg.course_plans[id];
+      if (!plan.enabled) return false;
+      if (plan.scope === "selected" && !plan.task_ids.length) {
+        throw new Error("有课程选择了“刷指定任务”，但未勾选任务");
+      }
+      if (plan.scope === "chapters" && !plan.chapter_ids.length) {
+        throw new Error("有课程选择了“刷指定章节”，但未勾选章节");
+      }
+      return true;
+    });
+    if (!enabled.length) {
+      throw new Error("请至少启用一门课程并选择刷课范围");
+    }
+    if ((cfg.auto_answer || cfg.comment_reply) && !cfg.api_key.trim()) {
+      throw new Error("启用师道云自动答题或评论回复前，请填写模型 API Key");
+    }
+    return cfg;
   }
 
   function syncAutomation() {
-    var enabled = $("bdata-auto-answer").checked
-      || $("bdata-comment-reply").checked;
-    $("bdata-full-auto").disabled = !enabled;
-    if (!enabled) $("bdata-full-auto").checked = false;
-    $("bdata-full-auto-warning").hidden = !$("bdata-full-auto").checked;
+    var enabled = $("bnu-auto-answer").checked
+      || $("bnu-comment-reply").checked;
+    $("bnu-qa-settings").hidden = !enabled;
+    if (!enabled) {
+      $("bnu-full-auto").checked = false;
+      $("bnu-full-auto-warning").hidden = true;
+    }
+  }
+
+  function syncSurveyStrategy() {
+    var normal = $("bnu-survey-strategy").value === "normal";
+    $("bnu-survey-fixed").hidden = normal;
+    $("bnu-survey-negative-field").hidden = normal;
+    $("bnu-survey-normal-hint").hidden = !normal;
   }
 
   function confirmFullAuto() {
     return Z.confirm(
-      "危险：全自动模式会跳过人工核验，直接提交模型生成的测验答案、评论和回复。"
-      + "每次启动插件前还会再次警告。确认启用全自动模式吗？",
+      "危险：全自动模式会跳过人工核验，直接提交模型生成的师道云测验答案、评论和回复。",
       "危险：全自动提交",
       {
         confirmButtonText: "我已了解，启用",
         cancelButtonText: "取消",
         closeOnClickModal: false,
         closeOnPressEscape: false
-      }
-    );
-  }
-
-  function syncSurveyStrategy() {
-    var normal = $("bdata-survey-strategy").value === "normal";
-    $("bdata-survey-fixed").hidden = normal;
-    $("bdata-survey-negative-field").hidden = normal;
-    $("bdata-survey-normal-hint").hidden = !normal;
-  }
-
-  async function save() {
-    try {
-      var cfg = collectConfig();
-      var selectedCourses = Object.keys(cfg.course_plans).filter(function (cid) {
-        var plan = cfg.course_plans[cid];
-        if (!plan.enabled) return false;
-        if (plan.scope === "selected" && !plan.task_ids.length) {
-          throw new Error("存在已启用但未勾选具体任务的课程");
-        }
-        return true;
       });
-      if (!selectedCourses.length) {
-        throw new Error("请至少启用一门课程并选择任务范围");
-      }
-      if ((cfg.auto_answer || cfg.comment_reply) && !cfg.api_key.trim()) {
-        throw new Error("启用自动答题或评论回复前，请填写模型 API Key");
-      }
-      if (cfg.full_auto && !(await confirmFullAuto())) {
-        $("bdata-full-auto").checked = false;
-        syncAutomation();
-        return;
+  }
+
+  async function save(validate, confirmAuto, silent) {
+    try {
+      var cfg = collectConfig(validate !== false);
+      if (validate !== false && confirmAuto !== false
+          && cfg.full_auto && !(await confirmFullAuto())) {
+        $("bnu-full-auto").checked = false;
+        return false;
       }
       await Z.saveConfig(cfg);
-      Z.message("success", "配置已保存；重新启动插件后生效");
-      showMsg(cfg.full_auto
-        ? "配置已保存。全自动模式将在每次启动前再次要求危险确认。"
-        : "配置已保存。模型生成内容会先暂停等待你核验。", "zy-warn");
+      if (!silent) Z.message("success", "BNU刷课设置已保存");
+      return true;
     } catch (e) {
       Z.message("error", "保存失败: " + e.message);
+      return false;
     }
   }
 
-  function taskSummary(task) {
-    var completion = task.completion || {};
-    var requirementText = [];
-    function addCount(label, item) {
-      if (!item || item.total === undefined) return;
-      requirementText.push(label + " " + item.done + "/" + item.total);
-    }
-    if (completion.video_percent !== null
-        && completion.video_percent !== undefined) {
-      requirementText.push("视频 " + completion.video_percent + "%");
-    }
-    addCount("问卷", completion.questionnaires);
-    addCount("评论", completion.comments);
-    addCount("回复", completion.replies);
-    var content = [];
-    if ((task.videos || []).length) {
-      content.push("视频 " + task.videos.length);
-    }
-    if ((task.tests || []).length) {
-      content.push("测试 " + task.tests.length);
-    }
-    var status = completion.complete ? "已完成" : "未完成";
-    var parts = [status];
-    if (requirementText.length) parts.push(requirementText.join(" · "));
-    parts.push("内容：" + (content.join(" · ") || "无"));
-    return parts.join(" ｜ ");
+  function scheduleSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      save(false, true, true);
+    }, 250);
   }
 
-  function makeTaskPlan(course, plan) {
-    plan = plan && typeof plan === "object" ? plan : {};
-    var card = document.createElement("div");
-    card.className = "bdata-course-plan";
-    card.setAttribute("data-cid", course.cid);
-
-    var head = document.createElement("div");
-    head.className = "zy-row bdata-plan-head";
-    var enabledLabel = document.createElement("label");
-    enabledLabel.className = "bdata-plan-title";
-    var enabled = document.createElement("input");
-    enabled.type = "checkbox";
-    enabled.className = "bdata-course-enabled";
-    enabled.checked = plan.enabled !== false;
-    enabledLabel.appendChild(enabled);
-    var title = document.createElement("strong");
-    title.textContent = course ? course.title : "课程缓存缺失";
-    enabledLabel.appendChild(title);
-    head.appendChild(enabledLabel);
-
-    if (course) {
-      var meta = document.createElement("span");
-      meta.className = "zy-hint";
-      meta.textContent = course.cid + " · " + (course.tasks || []).length
-        + " 个任务 · " + (course.extra_videos || []).length + " 个任务外视频";
-      head.appendChild(meta);
-
-      var scope = document.createElement("select");
-      scope.className = "bdata-course-scope";
-      [
-        ["selected", "刷指定任务"],
-        ["all", "刷全部任务"],
-        ["all_extra", "全部任务 + 任务外视频"],
-      ].forEach(function (entry) {
-        var option = document.createElement("option");
-        option.value = entry[0];
-        option.textContent = entry[1];
-        option.selected = (plan.scope || "all") === entry[0];
-        scope.appendChild(option);
-      });
-      head.appendChild(scope);
-      card.appendChild(head);
-
-      var taskList = document.createElement("div");
-      taskList.className = "bdata-task-list";
-      var selectedIds = Array.isArray(plan.task_ids)
-        ? plan.task_ids.map(String) : [];
-      (course.tasks || []).forEach(function (task) {
-        var item = document.createElement("label");
-        item.className = "bdata-task-option";
-        var checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.className = "bdata-task-check";
-        checkbox.value = task.id;
-        checkbox.checked = selectedIds.indexOf(String(task.id)) >= 0;
-        item.appendChild(checkbox);
-        var copy = document.createElement("span");
-        copy.className = "bdata-task-copy";
-        var taskTitle = document.createElement("span");
-        taskTitle.className = "bdata-task-title";
-        taskTitle.textContent = task.description || task.name || "未命名任务";
-        copy.appendChild(taskTitle);
-        var taskMeta = document.createElement("span");
-        taskMeta.className = "bdata-task-meta";
-        taskMeta.textContent = taskSummary(task);
-        copy.appendChild(taskMeta);
-        item.appendChild(copy);
-        taskList.appendChild(item);
-      });
-      card.appendChild(taskList);
-      taskList.hidden = scope.value !== "selected";
-      scope.addEventListener("change", function () {
-        taskList.hidden = scope.value !== "selected";
-      });
-      enabled.addEventListener("change", function () {
-        card.classList.toggle("is-disabled", !enabled.checked);
-      });
-      card.classList.toggle("is-disabled", !enabled.checked);
-    } else {
-      var missing = document.createElement("span");
-      missing.className = "zy-hint";
-      missing.textContent = "请刷新课程任务缓存后再选择任务";
-      head.appendChild(missing);
-      card.appendChild(head);
-    }
-    return card;
-  }
-
-  function renderTaskCache(data, configuredPlans) {
-    taskCache = data || null;
-    var root = $("bdata-course-plans");
-    var currentPlans = document.querySelector(".bdata-course-plan")
-      ? collectCoursePlans() : {};
-    root.textContent = "";
-    var plans = Object.assign({}, configuredPlans || {});
-    Object.assign(plans, currentPlans);
-    var courses = (data && data.courses) || {};
-    var cids = Object.keys(courses);
-    if (!cids.length) {
-      var empty = document.createElement("div");
-      empty.className = "zy-hint";
-      empty.textContent = "当前账号尚无课程缓存，请点击“刷新课程任务缓存”。";
-      root.appendChild(empty);
-    } else {
-      cids.forEach(function (cid) {
-        var course = courses[cid];
-        if (!course || typeof course !== "object") return;
-        root.appendChild(makeTaskPlan(course, plans[cid]));
-      });
-    }
-    var account = data && data.account ? "账号 " + data.account + " · " : "";
-    $("bdata-cache-meta").textContent = data && data.updated_at
-      ? account + "缓存更新于 " + data.updated_at + " · " + cids.length + " 门课程"
-      : account + "尚未生成任务缓存";
-  }
-
-  async function loadTaskCache(configuredPlans) {
+  async function loadCache(plans) {
     try {
-      var data = await Z.api("plugins/bdata-autoplay/tasks");
-      renderTaskCache(data, configuredPlans);
+      var data = await Z.api("plugins/" + pluginId + "/tasks");
+      renderCourses(data, plans || configuredPlans);
       return data;
     } catch (e) {
-      renderTaskCache(null, configuredPlans);
+      renderCourses(null, plans || configuredPlans);
       return null;
     }
   }
 
   function stopCacheWatch() {
-    if (cacheTimer) {
-      clearInterval(cacheTimer);
-      cacheTimer = null;
-    }
+    if (cacheTimer) clearInterval(cacheTimer);
+    cacheTimer = null;
   }
 
-  function watchCacheRefresh(configuredPlans) {
+  function watchRefresh() {
     stopCacheWatch();
-    var button = $("bdata-refresh-tasks");
-    var meta = $("bdata-cache-meta");
     var everRunning = false;
-    button.disabled = true;
+    $("bnu-refresh").disabled = true;
     cacheTimer = setInterval(async function () {
-      if (!document.getElementById("bdata-refresh-tasks")) {
+      if (!document.getElementById("bnu-refresh")) {
         stopCacheWatch();
         return;
       }
       try {
-        var plugins = await Z.api("plugins");
-        var plugin = (plugins.plugins || []).find(function (item) {
-          return item.id === "bdata-autoplay";
+        var data = await Z.api("plugins");
+        var plugin = (data.plugins || []).find(function (item) {
+          return item.id === pluginId;
         });
         var running = !!(plugin && plugin.running);
         if (running) {
           everRunning = true;
           var progress = plugin.progress || {};
-          meta.textContent = progress.title
-            ? "正在刷新任务缓存 · " + progress.title
-            : "正在登录并刷新任务缓存…";
+          $("bnu-cache-meta").textContent = progress.title
+            ? "正在获取课程详情 · " + progress.title
+            : "正在登录两个平台并获取课程详情…";
           return;
         }
-        if (everRunning) {
-          stopCacheWatch();
-          button.disabled = false;
-          await loadTaskCache(configuredPlans);
-          Z.message("success", "课程任务缓存已刷新");
-        }
+        if (!everRunning) return;
+        stopCacheWatch();
+        $("bnu-refresh").disabled = false;
+        await loadCache();
+        Z.message(
+          plugin && plugin.status === "crashed" ? "error" : "success",
+          plugin && plugin.status === "crashed"
+            ? "课程详情获取失败，请查看下方日志"
+            : "课程详情已更新");
       } catch (e) {
-        /* 下一轮继续 */
+        /* Keep polling. */
       }
-    }, 2000);
+    }, 1800);
   }
 
-  async function refreshTaskCache() {
-    var button = $("bdata-refresh-tasks");
-    var meta = $("bdata-cache-meta");
-    button.disabled = true;
-    meta.textContent = "正在保存课程设置并启动缓存任务…";
+  async function refreshCourses() {
+    if (!(await save(false))) return;
+    $("bnu-refresh").disabled = true;
+    $("bnu-cache-meta").textContent = "正在登录师道云和 SPOC…";
     try {
-      var cfg = collectConfig();
-      await Z.saveConfig(cfg);
-      await Z.post("plugins/bdata-autoplay/tasks/refresh");
-      watchCacheRefresh(cfg.course_plans || {});
+      await Z.post("plugins/" + pluginId + "/tasks/refresh");
+      watchRefresh();
     } catch (e) {
-      button.disabled = false;
-      meta.textContent = "刷新失败：" + e.message;
+      $("bnu-refresh").disabled = false;
+      $("bnu-cache-meta").textContent = "获取失败：" + e.message;
       Z.message("error", e.message);
     }
   }
@@ -493,7 +556,7 @@
     return Array.isArray(field.options) ? field.options : [];
   }
 
-  function addField(container, field) {
+  function addReviewField(container, field) {
     var card = document.createElement("div");
     card.className = "zy-review-field";
     var label = document.createElement("label");
@@ -501,7 +564,6 @@
     card.appendChild(label);
     var type = field.type || "text";
     var value = field.value;
-
     if (type === "single" || type === "scale") {
       var select = document.createElement("select");
       select.dataset.key = field.key;
@@ -535,7 +597,7 @@
       card.appendChild(group);
     } else {
       var textarea = document.createElement("textarea");
-      textarea.rows = type === "short" || type === "text" ? 5 : 3;
+      textarea.rows = 5;
       textarea.dataset.key = field.key;
       textarea.dataset.type = type;
       textarea.value = String(value || "");
@@ -544,28 +606,24 @@
     container.appendChild(card);
   }
 
-  function renderRequest(request) {
+  function renderReview(request) {
     if (!request) {
       requestId = "";
       currentFields = [];
-      $("bdata-review").hidden = true;
-      $("bdata-review-title").textContent = "";
-      $("bdata-review-meta").textContent = "";
-      $("bdata-review-context").textContent = "";
-      $("bdata-review-fields").textContent = "";
+      $("bnu-review").hidden = true;
       return;
     }
     if (request.id === requestId) return;
     requestId = request.id;
     currentFields = Array.isArray(request.fields)
-      ? request.fields.filter(function (field) { return field.type !== "scale"; })
-      : [];
-    $("bdata-review-title").textContent = request.title || "等待核验";
-    $("bdata-review-meta").textContent =
-      request.kind === "quiz"
-        ? "请核对并修改模型答案；量表题已按策略自动填写并从本列表隐藏。确认后才会提交试卷。"
-        : "请核对并修改评论与回复。确认后才会发表。";
-    var context = $("bdata-review-context");
+      ? request.fields.filter(function (field) {
+        return field.type !== "scale";
+      }) : [];
+    $("bnu-review-title").textContent = request.title || "等待核验";
+    $("bnu-review-meta").textContent = request.kind === "quiz"
+      ? "请核对模型答案。量表题已自动填写并隐藏。"
+      : "请核对评论和回复；确认后才会发表。";
+    var context = $("bnu-review-context");
     context.textContent = "";
     (request.context || []).forEach(function (line) {
       var item = document.createElement("div");
@@ -573,133 +631,226 @@
       item.textContent = line;
       context.appendChild(item);
     });
-    var fields = $("bdata-review-fields");
+    var fields = $("bnu-review-fields");
     fields.textContent = "";
-    currentFields.forEach(function (field) { addField(fields, field); });
-    $("bdata-approve").disabled = false;
-    $("bdata-skip").disabled = false;
-    $("bdata-review").hidden = false;
-    $("bdata-review").scrollIntoView({block: "nearest"});
+    currentFields.forEach(function (field) {
+      addReviewField(fields, field);
+    });
+    $("bnu-approve").disabled = false;
+    $("bnu-skip").disabled = false;
+    $("bnu-review").hidden = false;
   }
 
   function reviewedPayload() {
-    var root = $("bdata-review-fields");
-    var fields = [];
-    currentFields.forEach(function (field) {
-      var key = field.key;
-      var type = field.type || "text";
-      var value = "";
-      if (type === "single" || type === "scale") {
-        var select = root.querySelector('select[data-key="' + CSS.escape(String(key)) + '"]');
-        value = select ? select.value : String(field.value || "");
-      } else if (type === "multiple") {
-        var group = root.querySelector('div[data-key="' + CSS.escape(String(key)) + '"]');
-        value = group ? Array.from(group.querySelectorAll("input:checked"))
-          .map(function (el) { return el.value; }) : [];
-      } else {
-        var area = root.querySelector('textarea[data-key="' + CSS.escape(String(key)) + '"]');
-        value = area ? area.value : String(field.value || "");
-      }
-      fields.push({ key: key, value: value });
-    });
-    return { fields: fields };
+    var root = $("bnu-review-fields");
+    return {
+      fields: currentFields.map(function (field) {
+        var key = String(field.key);
+        var type = field.type || "text";
+        var value = "";
+        if (type === "single" || type === "scale") {
+          var select = root.querySelector(
+            'select[data-key="' + CSS.escape(key) + '"]');
+          value = select ? select.value : String(field.value || "");
+        } else if (type === "multiple") {
+          var group = root.querySelector(
+            'div[data-key="' + CSS.escape(key) + '"]');
+          value = group ? Array.from(
+            group.querySelectorAll("input:checked")
+          ).map(function (el) { return el.value; }) : [];
+        } else {
+          var area = root.querySelector(
+            'textarea[data-key="' + CSS.escape(key) + '"]');
+          value = area ? area.value : String(field.value || "");
+        }
+        return { key: key, value: value };
+      })
+    };
   }
 
   async function decide(action) {
     if (!requestId || sending) return;
     sending = true;
-    $("bdata-approve").disabled = true;
-    $("bdata-skip").disabled = true;
+    $("bnu-approve").disabled = true;
+    $("bnu-skip").disabled = true;
     try {
-      await Z.api("plugins/bdata-autoplay/review", {
+      await Z.api("plugins/" + pluginId + "/review", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           request_id: requestId,
           action: action,
-          payload: action === "approve" ? reviewedPayload() : { fields: [] }
+          payload: action === "approve"
+            ? reviewedPayload() : { fields: [] }
         })
       });
       Z.message("success", action === "approve"
         ? "已确认，插件将继续提交" : "已跳过本项");
     } catch (e) {
-      $("bdata-approve").disabled = false;
-      $("bdata-skip").disabled = false;
+      $("bnu-approve").disabled = false;
+      $("bnu-skip").disabled = false;
       Z.message("error", e.message);
     } finally {
       sending = false;
     }
   }
 
-  async function pollReview() {
-    if (!document.getElementById("bdata-review")) return;
-    try {
-      var data = await Z.api("plugins/bdata-autoplay/review");
-      renderRequest(data.request || null);
-      if (data.response && data.request) {
-        $("bdata-review-meta").textContent =
-          "已确认，正在等待插件执行网页提交…";
-      }
-    } catch (e) {
-      /* 下一轮继续读取 */
-    }
+  function fmtDuration(value) {
+    if (value === null || value === undefined || !isFinite(value)) return "-";
+    value = Math.max(0, Math.round(Number(value)));
+    var minutes = Math.floor(value / 60);
+    var seconds = value % 60;
+    return minutes + ":" + String(seconds).padStart(2, "0");
   }
 
-  (async function init() {
-    var cfg = await Z.getConfig();
-    $("bdata-auto-answer").checked = cfg.auto_answer === true;
-    $("bdata-comment-reply").checked = cfg.comment_reply === true;
-    $("bdata-full-auto").checked = cfg.full_auto === true;
-    $("bdata-unfinished").checked = cfg.only_unfinished !== false;
-    $("bdata-workers").value = cfg.workers || 2;
-    $("bdata-speedup").value = Math.min(3, cfg.speedup || 3);
-    $("bdata-tolerance").value = cfg.completion_tolerance != null
-      ? cfg.completion_tolerance : 3;
-    $("bdata-headless").checked = cfg.headless !== false;
-    $("bdata-username").value = cfg.username || "";
-    $("bdata-password").value = cfg.password || "";
-    $("bdata-api-url").value =
-      cfg.api_url || "https://api.deepseek.com";
-    $("bdata-api-key").value = cfg.api_key || "";
-    $("bdata-model-id").value = cfg.model_id || "deepseek-flash";
-    $("bdata-survey-strategy").value =
-      cfg.survey_strategy === "normal" ? "normal" : "fixed";
-    $("bdata-survey-positive").value =
-      cfg.survey_positive_value != null ? String(cfg.survey_positive_value) : "3";
-    $("bdata-survey-negative").value =
-      cfg.survey_negative_value != null ? String(cfg.survey_negative_value) : "1";
-    $("bdata-auto-answer").addEventListener("change", syncAutomation);
-    $("bdata-comment-reply").addEventListener("change", syncAutomation);
-    $("bdata-full-auto").addEventListener("change", async function () {
-      if ($("bdata-full-auto").checked && !(await confirmFullAuto())) {
-        $("bdata-full-auto").checked = false;
+  function workerCard(worker) {
+    var card = document.createElement("div");
+    card.className = "bnu-worker";
+    var head = document.createElement("div");
+    head.className = "bnu-worker-head";
+    var info = document.createElement("div");
+    var platform = document.createElement("span");
+    platform.className = "bnu-platform " +
+      (worker.platform === "SPOC" ? "spoc" : "bdata");
+    platform.textContent = worker.platform || "刷课";
+    info.appendChild(platform);
+    var title = document.createElement("div");
+    title.className = "bnu-worker-title";
+    title.textContent = (worker.course ? worker.course + " · " : "") +
+      (worker.title || "—");
+    title.title = title.textContent;
+    info.appendChild(title);
+    head.appendChild(info);
+    var status = document.createElement("span");
+    status.className = "zy-hint";
+    status.textContent = worker.status || "";
+    head.appendChild(status);
+    card.appendChild(head);
+    var progress = document.createElement("div");
+    progress.className = "zy-progress";
+    var bar = document.createElement("div");
+    bar.className = "zy-progress-bar";
+    bar.style.width = Math.max(0, Math.min(
+      100, Number(worker.percent) || 0)) + "%";
+    progress.appendChild(bar);
+    card.appendChild(progress);
+    var meta = document.createElement("div");
+    meta.className = "bnu-worker-meta";
+    meta.textContent = "服务器进度 " +
+      (worker.percent === null || worker.percent === undefined
+        ? "-" : worker.percent + "%") +
+      " · 时长 " + fmtDuration(worker.total_s) +
+      " · 剩余 " + fmtDuration(worker.eta_s) +
+      (worker.replays ? " · 重播 " + worker.replays + " 次" : "");
+    card.appendChild(meta);
+    return card;
+  }
+
+  function renderWorkers(progress, plugin) {
+    var panel = $("bnu-progress-panel");
+    var root = $("bnu-workers");
+    if (!progress || !progress.workers) {
+      if (plugin && plugin.running) panel.hidden = false;
+      return;
+    }
+    panel.hidden = false;
+    $("bnu-overall-progress").textContent =
+      "已完成 " + (progress.done || 0) + "/" + (progress.total || 0);
+    root.textContent = "";
+    Object.keys(progress.workers)
+      .sort(function (a, b) { return Number(a) - Number(b); })
+      .forEach(function (key) {
+        root.appendChild(workerCard(progress.workers[key]));
+      });
+  }
+
+  async function pollReviewAndProgress() {
+    try {
+      var review = await Z.api("plugins/" + pluginId + "/review");
+      renderReview(review.request || null);
+    } catch (e) { /* Plugin may be idle. */ }
+    try {
+      var data = await Z.api("plugins");
+      var plugin = (data.plugins || []).find(function (item) {
+        return item.id === pluginId;
+      });
+      if (plugin && plugin.progress && plugin.progress.workers) {
+        latestProgress = plugin.progress;
       }
-      syncAutomation();
+      renderWorkers(latestProgress, plugin);
+    } catch (e) { /* Ignore transient polling errors. */ }
+  }
+
+  async function init() {
+    var cfg = await Z.getConfig();
+    $("bnu-auto-answer").checked = cfg.auto_answer === true;
+    $("bnu-comment-reply").checked = cfg.comment_reply === true;
+    $("bnu-full-auto").checked = cfg.full_auto === true;
+    $("bnu-unfinished").checked = cfg.only_unfinished !== false;
+    $("bnu-workers").value = cfg.workers || 4;
+    $("bnu-speedup").value = Math.min(3, cfg.speedup || 3);
+    $("bnu-tolerance").value = cfg.completion_tolerance != null
+      ? cfg.completion_tolerance : 3;
+    $("bnu-headless").checked = cfg.headless !== false;
+    $("bnu-api-url").value = cfg.api_url || "https://api.deepseek.com";
+    $("bnu-api-key").value = cfg.api_key || "";
+    $("bnu-model-id").value = cfg.model_id || "deepseek-flash";
+    $("bnu-survey-strategy").value =
+      cfg.survey_strategy === "normal" ? "normal" : "fixed";
+    $("bnu-survey-positive").value =
+      cfg.survey_positive_value != null ? String(cfg.survey_positive_value) : "3";
+    $("bnu-survey-negative").value =
+      cfg.survey_negative_value != null ? String(cfg.survey_negative_value) : "1";
+
+    $("bnu-auto-answer").addEventListener("change", syncAutomation);
+    $("bnu-comment-reply").addEventListener("change", syncAutomation);
+    $("bnu-full-auto").addEventListener("change", async function () {
+      if ($("bnu-full-auto").checked && !(await confirmFullAuto())) {
+        $("bnu-full-auto").checked = false;
+      }
+      $("bnu-full-auto-warning").hidden = !$("bnu-full-auto").checked;
+      await save(false, true, true);
     });
-    $("bdata-survey-strategy").addEventListener("change", syncSurveyStrategy);
-    $("bdata-save").addEventListener("click", save);
-    $("bdata-refresh-tasks").addEventListener("click", refreshTaskCache);
-    $("bdata-approve").addEventListener("click", function () { decide("approve"); });
-    $("bdata-skip").addEventListener("click", function () { decide("skip"); });
+    $("bnu-survey-strategy").addEventListener("change", syncSurveyStrategy);
+    [
+      "bnu-headless", "bnu-unfinished", "bnu-workers", "bnu-speedup",
+      "bnu-tolerance", "bnu-auto-answer", "bnu-comment-reply",
+      "bnu-api-url", "bnu-api-key", "bnu-model-id",
+      "bnu-survey-strategy", "bnu-survey-positive", "bnu-survey-negative"
+    ].forEach(function (id) {
+      $(id).addEventListener("change", scheduleSave);
+    });
+    $("bnu-refresh").addEventListener("click", refreshCourses);
+    $("bnu-save").addEventListener("click", function () { save(true); });
+    $("bnu-approve").addEventListener("click", function () { decide("approve"); });
+    $("bnu-skip").addEventListener("click", function () { decide("skip"); });
     syncAutomation();
     syncSurveyStrategy();
-    await loadTaskCache(cfg.course_plans || {});
-    await pollReview();
-    setInterval(pollReview, 2000);
+    await loadCache(cfg.course_plans || {});
+    await pollReviewAndProgress();
+    window.ZyfwBnuSave = function () {
+      return save(true, false, true);
+    };
+    progressTimer = setInterval(pollReviewAndProgress, 1500);
     try {
-      var plugins = await Z.api("plugins");
-      var plugin = (plugins.plugins || []).find(function (item) {
-        return item.id === "bdata-autoplay";
+      var data = await Z.api("plugins");
+      var plugin = (data.plugins || []).find(function (item) {
+        return item.id === pluginId;
       });
-      if (plugin && plugin.running
-          && plugin.progress && plugin.progress.stage === "cache") {
-        watchCacheRefresh(cfg.course_plans || {});
+      if (plugin && plugin.running && plugin.progress
+          && plugin.progress.stage === "cache") {
+        watchRefresh();
       }
-    } catch (e) {
-      /* 忽略启动时状态读取失败 */
-    }
-  })().catch(function (e) {
-    showMsg("配置界面初始化失败: " + e.message, "zy-error");
+    } catch (e) { /* Ignore startup state errors. */ }
+    window.addEventListener("beforeunload", function () {
+      if (progressTimer) clearInterval(progressTimer);
+      stopCacheWatch();
+      delete window.ZyfwBnuSave;
+    });
+  }
+
+  init().catch(function (error) {
+    showMsg("配置界面初始化失败: " + error.message, "zy-error");
   });
 })();
 </script>

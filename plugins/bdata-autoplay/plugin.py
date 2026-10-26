@@ -40,13 +40,14 @@ from llm import (  # noqa: E402
     generate_interaction,
     generate_quiz_answers,
 )
+import spoc as spoc_platform  # noqa: E402
 
 LOGIN_HOME = "https://bdata.bnu.edu.cn/"
 COURSE_DATA_API = "/wechatapi/api/learn/getCourseData"
 COURSE_LIST_API = "/wechatapi/api/learn/getMyCourses"
 USER_BINDS_API = "/wechatapi/api/user/getMyBinds"
 COOKIE_LIFE_SECONDS = 7 * 86400
-TASK_CACHE_VERSION = 3
+TASK_CACHE_VERSION = 4
 
 TASK_BUTTON_XPATH = (
     '//*[@id="app"]/section/main/div/div[2]/div[2]/div/div/div[3]'
@@ -208,6 +209,24 @@ def cookie_file(ctx: PluginContext) -> Path:
 def save_cookies(ctx: PluginContext, cookies: list[dict]) -> None:
     path = cookie_file(ctx)
     path.parent.mkdir(parents=True, exist_ok=True)
+    existing: list[dict] = []
+    if path.exists():
+        try:
+            old = json.loads(path.read_text(encoding="utf-8"))
+            if normalize_title(old.get("account")) == normalize_title(ctx.username):
+                existing = old.get("cookies") or []
+        except (OSError, ValueError, TypeError):
+            existing = []
+    merged: dict[tuple[str, str, str], dict] = {}
+    for cookie in [*existing, *cookies]:
+        if not isinstance(cookie, dict):
+            continue
+        key = (
+            str(cookie.get("name") or ""),
+            str(cookie.get("domain") or ""),
+            str(cookie.get("path") or "/"),
+        )
+        merged[key] = cookie
     tmp_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -215,7 +234,11 @@ def save_cookies(ctx: PluginContext, cookies: list[dict]) -> None:
             prefix=".bdata-cookies-", suffix=".tmp", delete=False,
         ) as f:
             tmp_path = f.name
-            json.dump({"saved_at": time.time(), "cookies": cookies},
+            json.dump({
+                "saved_at": time.time(),
+                "account": normalize_title(ctx.username),
+                "cookies": list(merged.values()),
+            },
                       f, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
@@ -235,6 +258,8 @@ def load_cookies(ctx: PluginContext) -> list[dict]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if normalize_title(data.get("account")) != normalize_title(ctx.username):
+            return []
         if time.time() - float(data.get("saved_at", 0)) > COOKIE_LIFE_SECONDS:
             return []
         cookies = data.get("cookies")
@@ -330,6 +355,15 @@ def inject_cookies(driver, cookies: list[dict]) -> None:
         return
     driver.get(LOGIN_HOME)
     driver.delete_all_cookies()
+    for cookie in cookies:
+        try:
+            driver.add_cookie(cookie)
+        except WebDriverException:
+            pass
+
+
+def inject_domain_cookies(driver, url: str, cookies: list[dict]) -> None:
+    driver.get(url)
     for cookie in cookies:
         try:
             driver.add_cookie(cookie)
@@ -681,36 +715,64 @@ def save_task_cache(ctx: PluginContext, data: dict) -> None:
     _write_json_atomic(task_cache_path(ctx), store)
 
 
-def collect_course_menu_videos(driver) -> list[dict]:
+def collect_course_menu_structure(driver) -> tuple[list[dict], list[dict]]:
+    """Return BData top-level chapters and their video entries."""
     deadline = time.time() + 8
-    videos: list[dict] = []
+    chapters: list[dict] = []
     while time.time() < deadline:
-        videos = driver.execute_script(
+        rows = driver.execute_script(
             """
             const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
-            return Array.from(document.querySelectorAll('li.el-menu-item'))
-              .map(el => {
-                const path = el.querySelector('svg path');
+            return Array.from(document.querySelectorAll(
+                '.el-menu > li.el-sub-menu')).map((chapter, index) => {
+              const title = chapter.querySelector(
+                  ':scope > .el-sub-menu__title');
+              const items = Array.from(chapter.querySelectorAll(
+                  ':scope > ul li.el-menu-item')).map(item => {
+                const path = item.querySelector('svg path');
                 return {
-                  title: norm(el.innerText),
-                  icon: path ? (path.getAttribute('d') || '') : '',
+                  title: norm(item.innerText),
+                  icon: path ? (path.getAttribute('d') || '') : ''
                 };
-              })
-              .filter(item => item.title &&
+              }).filter(item => item.title &&
                   item.icon.startsWith(arguments[0]));
+              return {
+                index,
+                name: norm(title && title.innerText),
+                videos: items
+              };
+            }).filter(chapter => chapter.name && chapter.videos.length);
             """,
             TASK_VIDEO_ICON_PREFIX,
         )
-        videos = videos if isinstance(videos, list) else []
-        if videos:
+        chapters = rows if isinstance(rows, list) else []
+        if chapters:
             break
         time.sleep(0.3)
-    result: dict[str, dict] = {}
-    for video in videos:
-        title = normalize_title(video.get("title"))
-        if title:
-            result[title] = {"title": title, "outside_tasks": True}
-    return list(result.values())
+
+    result: list[dict] = []
+    videos: dict[str, dict] = {}
+    for index, chapter in enumerate(chapters, start=1):
+        name = normalize_title(chapter.get("name"))
+        chapter_videos = []
+        for video in chapter.get("videos", []):
+            title = normalize_title(video.get("title"))
+            if not title:
+                continue
+            entry = {"title": title, "outside_tasks": True}
+            chapter_videos.append(entry)
+            videos[title] = entry
+        if chapter_videos:
+            result.append({
+                "id": f"chapter:{index}",
+                "name": name,
+                "videos": chapter_videos,
+            })
+    return result, list(videos.values())
+
+
+def collect_course_menu_videos(driver) -> list[dict]:
+    return collect_course_menu_structure(driver)[1]
 
 
 def _task_metric_counts(metrics: list[str]) -> dict[str, dict]:
@@ -770,7 +832,7 @@ def _task_cache_group(cid: str, group: dict, index: int) -> dict:
             summaries.append(entry)
     requirements = _task_metric_counts(metrics)
     return {
-        "id": f"{cid}:task:{number}",
+        "id": f"bdata:{cid}:task:{number}",
         "number": number,
         "name": f"任务{number}",
         "description": description,
@@ -795,21 +857,57 @@ def cache_course_tasks(ctx: PluginContext, driver, course_url: str,
         _task_cache_group(cid, group, index)
         for index, group in enumerate(groups)
     ]
+    chapters, menu_videos = collect_course_menu_structure(driver)
+    for index, chapter in enumerate(chapters, start=1):
+        chapter["id"] = f"bdata:{cid}:chapter:{index}"
     task_video_titles = {
         video["title"] for task in tasks for video in task["videos"]
     }
-    menu_videos = collect_course_menu_videos(driver)
     extra_videos = [
         video for video in menu_videos
         if video["title"] not in task_video_titles
     ]
+    chapter_ids_by_video = {
+        video["title"]: chapter["id"]
+        for chapter in chapters for video in chapter["videos"]
+    }
+    for task in tasks:
+        task["chapter_ids"] = list(dict.fromkeys(
+            chapter_ids_by_video.get(video["title"], "")
+            for video in task["videos"]
+            if chapter_ids_by_video.get(video["title"])
+        ))
+    completed_tasks = sum(
+        1 for task in tasks if task.get("completion", {}).get("complete"))
     return {
+        "id": f"bdata:{cid}",
+        "platform": "bdata",
         "cid": cid,
         "url": course_url,
         "title": title,
+        "has_tasks": bool(tasks),
         "cached_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "tasks": tasks,
+        "videos": [
+            video for task in tasks for video in task.get("videos", [])
+        ],
+        "tests": [
+            test for task in tasks for test in task.get("tests", [])
+        ],
+        "summaries": [
+            summary for task in tasks for summary in task.get("summaries", [])
+        ],
+        "assignments": [],
+        "chapters": chapters,
         "extra_videos": extra_videos,
+        "completion": {
+            "tasks": len(tasks),
+            "tasks_complete": completed_tasks,
+            "videos": sum(
+                len(task.get("videos", [])) for task in tasks),
+            "extra_videos": len(extra_videos),
+            "complete": bool(tasks) and completed_tasks == len(tasks),
+        },
     }
 
 
@@ -817,11 +915,7 @@ def refresh_task_cache(ctx: PluginContext, driver,
                        discovered: list[dict]) -> dict:
     cache = load_task_cache(ctx)
     errors = 0
-    current_cids = {course["cid"] for course in discovered}
-    cache["courses"] = {
-        cid: course for cid, course in cache["courses"].items()
-        if cid in current_cids
-    }
+    current_ids = {f"bdata:{course['cid']}" for course in discovered}
     for index, course_info in enumerate(discovered, start=1):
         course_url = course_info["url"]
         cid = course_info["cid"]
@@ -831,7 +925,7 @@ def refresh_task_cache(ctx: PluginContext, driver,
             title=f"读取任务缓存: {title}")
         try:
             course = cache_course_tasks(ctx, driver, course_url, cid)
-            cache["courses"][cid] = course
+            cache["courses"][course["id"]] = course
             cache["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             save_task_cache(ctx, cache)
             ctx.log(
@@ -844,11 +938,48 @@ def refresh_task_cache(ctx: PluginContext, driver,
     ctx.progress(
         stage="cache", done=len(discovered), total=len(discovered),
         title="任务缓存完成")
+    if errors == 0:
+        cache["courses"] = {
+            course_id: course for course_id, course in cache["courses"].items()
+            if not course_id.startswith("bdata:") or course_id in current_ids
+        }
     cache["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     save_task_cache(ctx, cache)
     if errors == len(discovered):
         raise RuntimeError("全部课程任务缓存失败")
     return cache
+
+
+def refresh_spoc_cache(ctx: PluginContext, driver) -> tuple[dict, int, int]:
+    cache = load_task_cache(ctx)
+    discovered_ids: set[str] = set()
+
+    def report(done: int, total: int, title: str) -> None:
+        ctx.progress(
+            stage="cache", done=done, total=total,
+            title=f"读取 SPOC 课程: {title}")
+
+    def save_course(course: dict) -> None:
+        discovered_ids.add(course["id"])
+        cache["courses"][course["id"]] = course
+        cache["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        save_task_cache(ctx, cache)
+
+    try:
+        failed = spoc_platform.cache_all_courses(
+            ctx, driver, report, save_course)
+    except (RuntimeError, WebDriverException) as exc:
+        ctx.log(f"SPOC 全量课程爬取失败: {exc}")
+        return cache, 0, 1
+    if discovered_ids and failed == 0:
+        cache["courses"] = {
+            course_id: course for course_id, course in cache["courses"].items()
+            if not course_id.startswith("spoc:")
+            or course_id in discovered_ids
+        }
+        cache["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        save_task_cache(ctx, cache)
+    return cache, len(discovered_ids), failed
 
 
 def _wait_task_dialog_closed(driver, timeout: float = 1.8) -> bool:
@@ -1504,6 +1635,16 @@ def click_menu_title(driver, title: str) -> bool:
     return bool(driver.execute_script(js, title))
 
 
+def wait_and_click_menu_title(driver, title: str,
+                              timeout: float = 20.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if click_menu_title(driver, title):
+            return True
+        time.sleep(0.4)
+    return False
+
+
 def wait_active_menu_title(driver, title: str, timeout: float = 15) -> None:
     deadline = time.time() + timeout
     target = normalize_title(title)
@@ -1787,27 +1928,252 @@ class PlayTracker:
             }
 
 
-def discover_course_jobs(ctx: PluginContext, driver,
-                         courses: list[tuple[str, str]]) -> list[dict]:
+def _course_plan(plans: dict, course: dict) -> dict:
+    plan = plans.get(course.get("id"))
+    if not isinstance(plan, dict):
+        plan = plans.get(course.get("cid"))
+    return plan if isinstance(plan, dict) else {
+        "enabled": True,
+        "scope": "all",
+        "task_ids": [],
+        "chapter_ids": [],
+    }
+
+
+def _bdata_job(course: dict, video: dict) -> dict:
+    return {
+        "platform": "bdata",
+        "key": f"bdata:{course['cid']}:{video['title']}",
+        "title": normalize_title(video.get("title")),
+        "course_id": course["id"],
+        "course_title": course.get("title") or course["cid"],
+        "course_url": course["url"],
+        "cid": course["cid"],
+    }
+
+
+def _spoc_job(course: dict, video: dict) -> dict:
+    return {
+        "platform": "spoc",
+        "key": f"spoc:{course['sign']}:{course['cid']}:{video['id']}",
+        "title": normalize_title(video.get("title")),
+        "course_id": course["id"],
+        "course_title": course.get("title") or course["cid"],
+        "course_url": course["url"],
+        "sign": course["sign"],
+        "cid": course["cid"],
+        "leaf_id": video["id"],
+    }
+
+
+def build_unified_work(
+        cache: dict, plans: dict, auto_answer: bool,
+        comment_reply: bool) -> tuple[list[dict], list[dict], list[dict]]:
+    bdata_jobs: dict[str, dict] = {}
+    spoc_jobs: dict[str, dict] = {}
+    quiz_items: list[dict] = []
+    interaction_items: list[dict] = []
+    for course in cache.get("courses", {}).values():
+        if not isinstance(course, dict):
+            continue
+        plan = _course_plan(plans if isinstance(plans, dict) else {}, course)
+        if plan.get("enabled") is False:
+            continue
+        scope = str(plan.get("scope") or "all")
+        course_title = normalize_title(course.get("title")) or str(
+            course.get("cid") or course.get("id") or "")
+        if course.get("platform") == "bdata":
+            tasks = [
+                task for task in course.get("tasks", [])
+                if isinstance(task, dict)
+            ]
+            selected_tasks = tasks
+            if scope == "selected":
+                task_ids = {str(value) for value in plan.get("task_ids", [])}
+                selected_tasks = [
+                    task for task in tasks if task.get("id") in task_ids
+                ]
+            elif scope == "chapters":
+                chapter_ids = {
+                    str(value) for value in plan.get("chapter_ids", [])
+                }
+                selected_tasks = [
+                    task for task in tasks
+                    if chapter_ids.intersection(
+                        str(value) for value in task.get("chapter_ids", []))
+                ]
+
+            if scope == "chapters":
+                chapter_ids = {
+                    str(value) for value in plan.get("chapter_ids", [])
+                }
+                videos = [
+                    video
+                    for chapter in course.get("chapters", [])
+                    if str(chapter.get("id")) in chapter_ids
+                    for video in chapter.get("videos", [])
+                ]
+            else:
+                videos = [
+                    video
+                    for task in selected_tasks
+                    for video in task.get("videos", [])
+                ]
+                if scope == "all_extra":
+                    videos += list(course.get("extra_videos", []))
+            for video in videos:
+                job = _bdata_job(course, video)
+                bdata_jobs[job["key"]] = job
+
+            if auto_answer:
+                for task in selected_tasks:
+                    for test in task.get("tests", []):
+                        if "已提交" in test.get("tags", []):
+                            continue
+                        quiz_items.append({
+                            "course_url": course["url"],
+                            "course_title": course_title,
+                            "title": normalize_title(test.get("title")),
+                        })
+            if comment_reply:
+                for task in selected_tasks:
+                    if (task_group_has(task, "评论")
+                            or task_group_has(task, "回复")):
+                        interaction_items.append({
+                            "course_url": course["url"],
+                            "course_title": course_title,
+                            "group": task,
+                        })
+        elif course.get("platform") == "spoc":
+            chapters = [
+                chapter for chapter in course.get("chapters", [])
+                if isinstance(chapter, dict)
+            ]
+            if scope == "chapters":
+                chapter_ids = {
+                    str(value) for value in plan.get("chapter_ids", [])
+                }
+                videos = [
+                    video for chapter in chapters
+                    if str(chapter.get("id")) in chapter_ids
+                    for video in chapter.get("videos", [])
+                ]
+            else:
+                videos = list(course.get("videos", []))
+            for video in videos:
+                job = _spoc_job(course, video)
+                spoc_jobs[job["key"]] = job
+
     jobs: list[dict] = []
-    for course_index, (course_url, cid) in enumerate(courses, start=1):
-        driver.get(course_url)
-        data = course_data(driver, cid)
-        course_title = normalize_title(data.get("title")) or cid
-        videos = collect_task_videos(driver)
+    bdata_values = list(bdata_jobs.values())
+    spoc_values = list(spoc_jobs.values())
+    for index in range(max(len(bdata_values), len(spoc_values))):
+        if index < len(spoc_values):
+            jobs.append(spoc_values[index])
+        if index < len(bdata_values):
+            jobs.append(bdata_values[index])
+    return jobs, quiz_items, interaction_items
+
+
+def _play_bdata_job(ctx: PluginContext, driver, job: dict, worker_id: int,
+                    tracker: PlayTracker, state: dict, speedup: float,
+                    tolerance: float, only_unfinished: bool) -> None:
+    title = job["title"]
+    tracker.set_worker(
+        worker_id, platform="师道云", status="检查中", title=title,
+        percent=0.0, eta_s=None, total_s=None,
+        course=job["course_title"])
+    if state.get("bdata_course") != job["course_url"]:
+        driver.get(job["course_url"])
+        state["bdata_course"] = job["course_url"]
+        time.sleep(0.8)
+    if not wait_and_click_menu_title(driver, title):
+        ensure_authenticated(ctx, driver)
+        driver.get(job["course_url"])
+        state["bdata_course"] = job["course_url"]
+        if not wait_and_click_menu_title(driver, title):
+            raise RuntimeError("师道云课程目录中未找到该视频")
+    wait_active_menu_title(driver, title)
+    media_duration = wait_video_duration(driver)
+    if media_duration <= 0:
+        raise RuntimeError("师道云视频时长不可用")
+    page_label = wait_duration_label(driver)
+    watched = float(parse_duration_seconds(page_label))
+    if only_unfinished and (
+            "已完成" in page_label
+            or is_complete(watched, media_duration, tolerance)):
+        tracker.mark(job["key"], "已完成")
+        tracker.set_worker(
+            worker_id, status="已完成", title=title, percent=100.0,
+            eta_s=0, total_s=round(media_duration))
         ctx.log(
-            f"[{course_index}/{len(courses)}] {course_title}: "
-            f"任务中共有 {len(videos)} 个必修视频")
-        for index, video in enumerate(videos, start=1):
-            title = video["title"]
-            jobs.append({
-                "key": f"{cid}:{index}:{title}",
-                "title": title,
-                "course_url": course_url,
-                "cid": cid,
-                "course_title": course_title,
-            })
-    return jobs
+            f"[w{worker_id}] 师道云跳过已完成 "
+            f"{watched:.0f}/{media_duration:.0f}s: {title}")
+        return
+
+    def report(fields: dict) -> None:
+        tracker.set_worker(
+            worker_id,
+            status="重播中" if fields.get("replaying") else "播放中",
+            title=fields["title"], percent=fields["percent"],
+            eta_s=fields["eta_s"],
+            total_s=round(fields["target_seconds"]),
+            course=job["course_title"],
+            replays=fields.get("replays", 0))
+
+    ok, watched, media_duration = play_until_complete(
+        driver, title, media_duration, watched, speedup, tolerance,
+        on_progress=report)
+    if not ok:
+        raise RuntimeError(
+            f"师道云服务器进度未达到视频时长"
+            f"({watched:.0f}/{media_duration:.0f}s)")
+    tracker.mark(job["key"], "已完成")
+    tracker.set_worker(
+        worker_id, status="已完成", title=title, percent=100.0,
+        eta_s=0, total_s=round(media_duration))
+    ctx.log(
+        f"[w{worker_id}] 师道云完成 "
+        f"{watched:.0f}/{media_duration:.0f}s: {title}")
+
+
+def _play_spoc_job(ctx: PluginContext, driver, job: dict, worker_id: int,
+                   tracker: PlayTracker, state: dict, speedup: float,
+                   only_unfinished: bool) -> None:
+    title = job["title"]
+    tracker.set_worker(
+        worker_id, platform="SPOC", status="检查中", title=title,
+        percent=0.0, eta_s=None, total_s=None,
+        course=job["course_title"])
+
+    def report(percent: float, remain_s: float | None,
+               duration: float) -> None:
+        tracker.set_worker(
+            worker_id, status="播放中", title=title,
+            percent=round(percent, 1),
+            eta_s=round(remain_s) if remain_s is not None else None,
+            total_s=round(duration) if duration else None,
+            course=job["course_title"])
+
+    status = spoc_platform.play_video(
+        driver, job["sign"], job["cid"], job["leaf_id"], speedup,
+        only_unfinished=only_unfinished, on_progress=report)
+    if status in {"页面无播放器", "找不到播放按钮"}:
+        tracker.set_worker(
+            worker_id, status="重登中", title=title,
+            percent=None, eta_s=None, total_s=None)
+        state["cookies"] = spoc_platform.ensure_login(
+            ctx, driver, state.get("cookies"))
+        status = spoc_platform.play_video(
+            driver, job["sign"], job["cid"], job["leaf_id"], speedup,
+            only_unfinished=only_unfinished, on_progress=report)
+    complete = status in {"已完成", "服务器已记录"}
+    tracker.mark(job["key"], "已完成" if complete else status)
+    tracker.set_worker(
+        worker_id, status="已完成" if complete else status, title=title,
+        percent=100.0 if complete else None, eta_s=0 if complete else None,
+        total_s=None)
+    ctx.log(f"[w{worker_id}] SPOC {title} → {status}")
 
 
 def run_worker(ctx: PluginContext, worker_id: int, jobs: queue.Queue,
@@ -1815,83 +2181,39 @@ def run_worker(ctx: PluginContext, worker_id: int, jobs: queue.Queue,
                speedup: float, tolerance: float, only_unfinished: bool,
                initial_driver=None) -> None:
     driver = initial_driver
-    current_course = ""
+    state = {"bdata_course": "", "cookies": list(cookies)}
     try:
         if driver is None:
             driver = make_driver(ctx, headless=bool(ctx.cfg("headless", True)))
-            inject_cookies(driver, cookies)
-            ensure_authenticated(ctx, driver)
+        inject_domain_cookies(driver, LOGIN_HOME, cookies)
+        inject_domain_cookies(driver, spoc_platform.LOGIN_HOME, cookies)
 
         while True:
             try:
                 job = jobs.get_nowait()
             except queue.Empty:
                 tracker.set_worker(
-                    worker_id, status="空闲", title="", percent=None,
-                    eta_s=None, total_s=None)
+                    worker_id, status="空闲", eta_s=None)
                 return
             title = job["title"]
-            course_title = job["course_title"]
-            tracker.set_worker(
-                worker_id, status="检查中", title=title, percent=0.0,
-                eta_s=None, total_s=None, course=course_title)
             try:
-                if current_course != job["course_url"]:
-                    driver.get(job["course_url"])
-                    current_course = job["course_url"]
-                    time.sleep(1.0)
-                if not click_menu_title(driver, title):
-                    raise RuntimeError("课程目录中未找到该视频")
-                wait_active_menu_title(driver, title)
-                media_duration = wait_video_duration(driver)
-                if media_duration <= 0:
-                    raise RuntimeError("视频时长不可用")
-                page_label = wait_duration_label(driver)
-                watched = float(parse_duration_seconds(page_label))
-                if only_unfinished and (
-                        "已完成" in page_label
-                        or is_complete(watched, media_duration, tolerance)):
-                    tracker.mark(job["key"], "已完成")
-                    tracker.set_worker(
-                        worker_id, status="已完成", title=title,
-                        percent=100.0, eta_s=0, total_s=round(media_duration))
-                    ctx.log(
-                        f"[w{worker_id}] 跳过已完成 "
-                        f"{watched:.0f}/{media_duration:.0f}s: {title}")
-                    continue
-
-                def report(fields: dict, course_title: str = course_title) -> None:
-                    tracker.set_worker(
-                        worker_id,
-                        status="重播中" if fields.get("replaying") else "播放中",
-                        title=fields["title"],
-                        percent=fields["percent"],
-                        eta_s=fields["eta_s"],
-                        total_s=round(fields["target_seconds"]),
-                        course=course_title,
-                        replays=fields.get("replays", 0),
-                    )
-
-                ok, watched, media_duration = play_until_complete(
-                    driver, title, media_duration, watched, speedup,
-                    tolerance, on_progress=report)
-                if not ok:
-                    raise RuntimeError(
-                        f"服务器录制进度未达到视频时长"
-                        f"({watched:.0f}/{media_duration:.0f}s)")
-                tracker.mark(job["key"], "已完成")
-                tracker.set_worker(
-                    worker_id, status="已完成", title=title, percent=100.0,
-                    eta_s=0, total_s=round(media_duration))
-                ctx.log(
-                    f"[w{worker_id}] 完成 "
-                    f"{watched:.0f}/{media_duration:.0f}s: {title}")
+                if job["platform"] == "spoc":
+                    _play_spoc_job(
+                        ctx, driver, job, worker_id, tracker, state,
+                        speedup, only_unfinished)
+                else:
+                    _play_bdata_job(
+                        ctx, driver, job, worker_id, tracker, state,
+                        speedup, tolerance, only_unfinished)
             except Exception as e:
                 tracker.mark(job["key"], "出错")
                 tracker.set_worker(
                     worker_id, status="出错", title=title, percent=None,
-                    eta_s=None, total_s=None)
-                ctx.log(f"[w{worker_id}] 视频失败: {title}: {e!r}")
+                    eta_s=None, total_s=None, platform=(
+                        "SPOC" if job["platform"] == "spoc" else "师道云"))
+                ctx.log(
+                    f"[w{worker_id}] {job['platform']} 视频失败: "
+                    f"{title}: {e!r}")
             finally:
                 jobs.task_done()
     except Exception as e:
@@ -2141,6 +2463,82 @@ def run_qa(ctx: PluginContext, driver,
         broker.clear()
 
 
+def run_qa_work(ctx: PluginContext, driver,
+                work: list[tuple[tuple[str, str], str, dict | str]],
+                full_auto: bool = False) -> tuple[int, int]:
+    """Run cached BData quiz/interaction work without touching video progress."""
+    if not work:
+        return 0, 0
+    api_url = str(
+        ctx.cfg("api_url", "https://api.deepseek.com")
+        or "https://api.deepseek.com").strip()
+    api_key = str(ctx.cfg("api_key") or "").strip()
+    model_id = str(
+        ctx.cfg("model_id", "deepseek-flash") or "deepseek-flash").strip()
+    if not (api_url and api_key and model_id):
+        raise RuntimeError("答题模式需要填写模型 API 地址、API Key 和模型 ID")
+    model = (api_url, api_key, model_id)
+    broker = ReviewBroker(ctx)
+    broker.clear()
+    done = 0
+    skipped = 0
+    ctx.log(f"答题与互动任务共 {len(work)} 项，开始并行处理")
+    try:
+        for course, course_title, work_item in work:
+            course_url, _cid = course
+            driver.get(course_url)
+            try:
+                if isinstance(work_item, str):
+                    ctx.log(
+                        f"答题进度 {done + skipped + 1}/{len(work)}: "
+                        f"{course_title} · {work_item}")
+                    succeeded = run_quiz_item(
+                        ctx, driver, broker, course_title, work_item, model,
+                        full_auto=full_auto)
+                else:
+                    label = normalize_title(work_item.get("description"))
+                    ctx.log(
+                        f"互动进度 {done + skipped + 1}/{len(work)}: "
+                        f"{course_title} · {label}")
+                    succeeded = run_interaction_group(
+                        ctx, driver, broker, course_url, course_title,
+                        work_item, model, full_auto=full_auto)
+                done += int(bool(succeeded))
+                skipped += int(not succeeded)
+            except (LLMError, RuntimeError, WebDriverException) as exc:
+                skipped += 1
+                label = (work_item if isinstance(work_item, str)
+                         else work_item.get("description"))
+                ctx.log(f"答题或互动失败: {label}: {exc}")
+    finally:
+        broker.clear()
+    ctx.log(
+        f"答题与互动处理结束: 完成 {done}/{len(work)}，"
+        f"跳过或失败 {skipped}")
+    return done, skipped
+
+
+def run_qa_worker(ctx: PluginContext,
+                  work: list[tuple[tuple[str, str], str, dict | str]],
+                  cookies: list[dict], full_auto: bool,
+                  result: dict) -> None:
+    driver = None
+    try:
+        driver = make_driver(ctx, headless=bool(ctx.cfg("headless", True)))
+        inject_domain_cookies(driver, LOGIN_HOME, cookies)
+        result["done"], result["skipped"] = run_qa_work(
+            ctx, driver, work, full_auto=full_auto)
+    except Exception as exc:
+        result["error"] = str(exc)
+        ctx.log(f"并行答题与互动线程失败: {exc}")
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
 def build_combined_work(
         cache: dict, courses: list[tuple[str, str]], plans: dict,
         auto_answer: bool, comment_reply: bool) -> tuple[
@@ -2210,116 +2608,110 @@ def build_combined_work(
     return list(video_jobs.values()), quiz_items, interaction_items
 
 
-def run_combined(ctx: PluginContext, driver,
-                 courses: list[tuple[str, str]]) -> None:
+def run_combined(ctx: PluginContext, driver) -> None:
     cache = load_task_cache(ctx)
     if not cache.get("courses"):
         raise RuntimeError(
-            "尚未生成课程任务缓存，请先在插件配置中点击“刷新课程任务缓存”")
+            "尚未获取课程详情，请先点击“获取课程详情”")
     auto_answer = bool(ctx.cfg("auto_answer", False))
     comment_reply = bool(ctx.cfg("comment_reply", False))
     full_auto = bool(ctx.cfg("full_auto", False)) and (
         auto_answer or comment_reply)
-    jobs, quiz_items, interaction_items = build_combined_work(
+    jobs, quiz_items, interaction_items = build_unified_work(
         cache,
-        courses,
         ctx.cfg("course_plans", {}),
         auto_answer,
         comment_reply,
     )
-    total_work = len(jobs) + len(quiz_items) + len(interaction_items)
-    if not total_work:
+    total_qa = len(quiz_items) + len(interaction_items)
+    if not jobs and not total_qa:
         ctx.progress(done=0, total=0)
         ctx.status("所选范围内没有需要处理的内容", done=True)
         return
-    ctx.log(
-        f"合并任务开始: 视频 {len(jobs)}, 测验 {len(quiz_items)}, "
-        f"评论回复 {len(interaction_items)}, 总计 {total_work}")
+    spoc_count = sum(1 for job in jobs if job["platform"] == "spoc")
+    bdata_count = len(jobs) - spoc_count
+    ctx.log(f"课程任务开始: SPOC 视频 {spoc_count}, 师道云视频 {bdata_count}")
+    if total_qa:
+        ctx.log(f"并行答题与互动: {total_qa} 项")
     if full_auto:
         ctx.log("警告: 全自动模式已启用，答题和互动内容将不经人工核验直接提交")
 
-    done = 0
-    skipped = 0
+    cookie_set = load_cookies(ctx) or driver.get_cookies()
+    qa_result: dict = {}
+    qa_thread = None
+    qa_work: list[tuple[tuple[str, str], str, dict | str]] = []
+    if auto_answer:
+        qa_work.extend(
+            ((item["course_url"], ""), item["course_title"], item["title"])
+            for item in quiz_items
+        )
+    if comment_reply:
+        qa_work.extend(
+            ((item["course_url"], ""), item["course_title"], item["group"])
+            for item in interaction_items
+        )
+    if qa_work and jobs:
+        if not str(ctx.cfg("api_key") or "").strip():
+            raise RuntimeError(
+                "自动答题或评论回复已启用，但未配置模型 API Key")
+        qa_thread = threading.Thread(
+            target=run_qa_worker,
+            args=(ctx, qa_work, cookie_set, full_auto, qa_result),
+            daemon=True,
+            name="bnu-qa-worker",
+        )
+        qa_thread.start()
+    elif qa_work and not str(ctx.cfg("api_key") or "").strip():
+        raise RuntimeError(
+            "自动答题或评论回复已启用，但未配置模型 API Key")
+
+    tracker = None
     if jobs:
         workers = min(max(1, positive_int(ctx.cfg("workers", 2), 2)), len(jobs))
-        ctx.log(f"开始播放任务范围内视频: {len(jobs)} 个, {workers} 并发")
+        ctx.log(
+            f"开始混合播放视频: {len(jobs)} 个, {workers} 并发")
         tracker = run_parallel(
             ctx,
             jobs,
-            driver.get_cookies(),
-            None,
+            cookie_set,
+            driver,
             bounded_float(ctx.cfg("speedup", 3), 3.0, 1.0, 3.0),
             bounded_float(
                 ctx.cfg("completion_tolerance", 3), 3.0, 0.0, 30.0),
             bool(ctx.cfg("only_unfinished", True)),
             workers,
         )
-        done = sum(
-            1 for status in tracker.results.values() if status == "已完成")
-        skipped += len(jobs) - done
+    if not jobs and qa_work:
+        result: dict = {}
+        run_qa_worker(ctx, qa_work, cookie_set, full_auto, result)
+        qa_thread = None
+        qa_result.update(result)
+    if qa_thread is not None:
+        qa_thread.join()
 
-    model = None
-    broker = None
-    if quiz_items or interaction_items:
-        api_url = str(
-            ctx.cfg("api_url", "https://api.deepseek.com")
-            or "https://api.deepseek.com").strip()
-        api_key = str(ctx.cfg("api_key") or "").strip()
-        model_id = str(
-            ctx.cfg("model_id", "deepseek-flash")
-            or "deepseek-flash").strip()
-        if not api_key:
-            raise RuntimeError("答题或评论回复已启用，但未配置模型 API Key")
-        model = (api_url, api_key, model_id)
-        broker = ReviewBroker(ctx)
-        broker.clear()
-
-    try:
-        for item in quiz_items:
-            ctx.progress(
-                done=done, total=total_work, course=item["course_title"],
-                title=item["title"])
-            driver.get(item["course_url"])
-            try:
-                if run_quiz_item(
-                        ctx, driver, broker, item["course_title"],
-                        item["title"], model, full_auto=full_auto):
-                    done += 1
-                else:
-                    skipped += 1
-            except (LLMError, RuntimeError, WebDriverException) as exc:
-                skipped += 1
-                ctx.log(f"测验失败: {item['title']}: {exc}")
-        for item in interaction_items:
-            group = item["group"]
-            ctx.progress(
-                done=done, total=total_work, course=item["course_title"],
-                title=normalize_title(group.get("description")))
-            try:
-                if run_interaction_group(
-                        ctx, driver, broker, item["course_url"],
-                        item["course_title"], group, model,
-                        full_auto=full_auto):
-                    done += 1
-                else:
-                    skipped += 1
-            except (LLMError, RuntimeError, WebDriverException) as exc:
-                skipped += 1
-                ctx.log(
-                    f"评论回复失败: {group.get('description', '')}: {exc}")
-    finally:
-        if broker:
-            broker.clear()
-    ctx.progress(done=done, total=total_work)
+    video_done = sum(
+        1 for status in (tracker.results.values() if tracker else [])
+        if status == "已完成")
+    qa_done = int(qa_result.get("done", 0))
+    qa_skipped = int(qa_result.get("skipped", 0))
+    if qa_result.get("error"):
+        ctx.log(f"并行答题线程错误: {qa_result['error']}")
+    ctx.progress(
+        done=video_done,
+        total=len(jobs),
+        workers=tracker.snapshot()["workers"] if tracker else {},
+    )
     ctx.status(
-        f"合并任务结束: 完成 {done}/{total_work}，跳过或失败 {skipped}",
+        f"BNU刷课结束: 视频完成 {video_done}/{len(jobs)}，"
+        f"答题互动完成 {qa_done}/{total_qa}，"
+        f"答题互动跳过或失败 {qa_skipped}",
         done=True)
 
 
 def main() -> None:
     ctx = PluginContext()
     if not ctx.username or not ctx.password:
-        ctx.log("未配置统一认证账号(需在全局设置或插件配置中填写),退出")
+        ctx.log("未配置全局统一认证账号，退出")
         return
 
     task_mode = str(
@@ -2337,17 +2729,60 @@ def main() -> None:
     driver = make_driver(ctx, headless=headless)
     driver.set_page_load_timeout(60)
     try:
-        discovered = ensure_authenticated(ctx, driver)
-        if not discovered:
-            ctx.status("当前统一认证账号下没有可访问的师道云课程", done=True)
-            return
-        courses = [(course["url"], course["cid"]) for course in discovered]
+        bdata_courses: list[dict] = []
+        spoc_ready = False
+        try:
+            bdata_courses = ensure_authenticated(ctx, driver)
+        except (RuntimeError, WebDriverException) as exc:
+            ctx.log(f"师道云登录或课程发现失败: {exc}")
+        cached = load_cookies(ctx)
+        try:
+            spoc_platform.ensure_login(ctx, driver, cached)
+            spoc_ready = True
+        except (RuntimeError, WebDriverException) as exc:
+            ctx.log(f"SPOC 登录失败: {exc}")
+        save_cookies(ctx, driver.get_cookies())
+
         if task_mode == "crawl":
-            ctx.log(f"开始刷新 {len(discovered)} 门课程的任务缓存")
-            refresh_task_cache(ctx, driver, discovered)
-            ctx.status("课程任务缓存已更新", done=True)
+            cache = load_task_cache(ctx)
+            bdata_ok = False
+            if bdata_courses:
+                try:
+                    cache = refresh_task_cache(
+                        ctx, driver, bdata_courses)
+                    bdata_ok = True
+                except (RuntimeError, WebDriverException) as exc:
+                    ctx.log(f"师道云课程缓存失败: {exc}")
+            if spoc_ready:
+                cache, spoc_count, spoc_failed = refresh_spoc_cache(
+                    ctx, driver)
+            else:
+                spoc_count, spoc_failed = 0, 1
+            if not bdata_ok and not spoc_ready:
+                raise RuntimeError("SPOC 和师道云课程详情均获取失败")
+            platform_courses = [
+                course for course in cache.get("courses", {}).values()
+                if isinstance(course, dict)
+            ]
+            bdata_count = sum(
+                1 for course in platform_courses
+                if course.get("platform") == "bdata")
+            spoc_count = sum(
+                1 for course in platform_courses
+                if course.get("platform") == "spoc")
+            task_count = sum(
+                len(course.get("tasks", []))
+                for course in platform_courses
+                if course.get("platform") == "bdata")
+            ctx.status(
+                f"课程详情已更新: 师道云 {bdata_count} 门/"
+                f"{task_count} 个任务，SPOC {spoc_count} 门课程，"
+                f"失败平台任务 {spoc_failed}",
+                done=True)
             return
-        run_combined(ctx, driver, courses)
+        if not bdata_courses and not spoc_ready:
+            raise RuntimeError("SPOC 和师道云均未登录成功")
+        run_combined(ctx, driver)
     finally:
         try:
             driver.quit()
