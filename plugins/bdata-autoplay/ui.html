@@ -293,17 +293,31 @@
   }
 
   function taskSummary(task) {
-    var pieces = [];
+    var completion = task.completion || {};
+    var requirementText = [];
+    function addCount(label, item) {
+      if (!item || item.total === undefined) return;
+      requirementText.push(label + " " + item.done + "/" + item.total);
+    }
+    if (completion.video_percent !== null
+        && completion.video_percent !== undefined) {
+      requirementText.push("视频 " + completion.video_percent + "%");
+    }
+    addCount("问卷", completion.questionnaires);
+    addCount("评论", completion.comments);
+    addCount("回复", completion.replies);
+    var content = [];
     if ((task.videos || []).length) {
-      pieces.push("视频 " + task.videos.length);
+      content.push("视频 " + task.videos.length);
     }
     if ((task.tests || []).length) {
-      pieces.push("测试 " + task.tests.length);
+      content.push("测试 " + task.tests.length);
     }
-    var requirements = task.requirements || {};
-    if (requirements["评论"]) pieces.push("评论");
-    if (requirements["回复"]) pieces.push("回复");
-    return pieces.join(" · ") || "无内容";
+    var status = completion.complete ? "已完成" : "未完成";
+    var parts = [status];
+    if (requirementText.length) parts.push(requirementText.join(" · "));
+    parts.push("内容：" + (content.join(" · ") || "无"));
+    return parts.join(" ｜ ");
   }
 
   function makeTaskPlan(courseUrl, course, plan) {

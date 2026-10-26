@@ -23,6 +23,7 @@ global_config = GlobalConfig()
 runner = Runner()
 pm = PluginManager(runner)
 _BDATA_ID = "bdata-autoplay"
+_BDATA_TASK_CACHE_VERSION = 2
 
 # ---------------- 窗口关闭自动退出 ----------------
 # 页面通过 WebSocket 保持连接;所有客户端断开且宽限期内无人重连(如页面刷新)时,
@@ -293,8 +294,12 @@ def _read_json_object(path: Path) -> dict | None:
 @api_router.get("/plugins/{plugin_id}/tasks")
 def get_bdata_tasks(plugin_id: str):
     data = _read_json_object(_bdata_task_cache_path(plugin_id))
-    if not data:
-        return {"version": 1, "updated_at": "", "courses": {}}
+    if not data or data.get("version") != _BDATA_TASK_CACHE_VERSION:
+        return {
+            "version": _BDATA_TASK_CACHE_VERSION,
+            "updated_at": "",
+            "courses": {},
+        }
     return data
 
 

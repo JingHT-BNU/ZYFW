@@ -44,7 +44,7 @@ from llm import (  # noqa: E402
 LOGIN_HOME = "https://bdata.bnu.edu.cn/"
 COURSE_DATA_API = "/wechatapi/api/learn/getCourseData"
 COOKIE_LIFE_SECONDS = 7 * 86400
-TASK_CACHE_VERSION = 1
+TASK_CACHE_VERSION = 2
 
 TASK_BUTTON_XPATH = (
     '//*[@id="app"]/section/main/div/div[2]/div[2]/div/div/div[3]'
@@ -632,6 +632,26 @@ def _task_metric_counts(metrics: list[str]) -> dict[str, dict]:
     return counts
 
 
+def _task_completion(metrics: list[str], counts: dict[str, dict]) -> dict:
+    video_percent = None
+    for metric in metrics:
+        match = re.search(r"观看视频(\d+)%", metric)
+        if match:
+            video_percent = int(match.group(1))
+            break
+    requirements_done = all(
+        item["done"] >= item["total"] for item in counts.values())
+    complete = requirements_done and (
+        video_percent is None or video_percent >= 100)
+    return {
+        "video_percent": video_percent,
+        "questionnaires": counts.get("提交问卷"),
+        "comments": counts.get("评论"),
+        "replies": counts.get("回复"),
+        "complete": complete,
+    }
+
+
 def _task_cache_group(cid: str, group: dict, index: int) -> dict:
     header = normalize_title(group.get("header"))
     metrics = [normalize_title(m) for m in group.get("metrics", [])]
@@ -656,13 +676,15 @@ def _task_cache_group(cid: str, group: dict, index: int) -> dict:
             tests.append(entry)
         elif icon.startswith("M832 384H576V128"):
             summaries.append(entry)
+    requirements = _task_metric_counts(metrics)
     return {
         "id": f"{cid}:task:{number}",
         "number": number,
         "name": f"任务{number}",
         "description": description,
         "metrics": metrics,
-        "requirements": _task_metric_counts(metrics),
+        "requirements": requirements,
+        "completion": _task_completion(metrics, requirements),
         "items": items_out,
         "videos": videos,
         "tests": tests,

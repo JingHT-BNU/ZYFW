@@ -1,7 +1,7 @@
 {
   "id": "bdata-autoplay",
   "name": "师道云刷课",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "description": "将师道云刷课、测验、评论和回复合并为单一任务；支持课程任务缓存、按课程与任务范围执行、自动答题/互动以及需要每次启动确认的全自动模式。",
   "entry": "plugin.py",
   "config_ui": "ui.html",
