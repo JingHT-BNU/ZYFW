@@ -376,20 +376,42 @@ html, body, #app {
   flex: 1 1 420px;
 }
 .bdata-task-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 6px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
   padding-top: 7px;
   border-top: 1px dashed var(--zyfw-border);
 }
 .bdata-task-option {
-  display: flex;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
   align-items: flex-start;
   gap: 7px;
-  font-size: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--zyfw-border);
+  border-radius: 6px;
+  background: var(--zyfw-log-bg);
   line-height: 1.5;
+  cursor: pointer;
 }
-.bdata-task-option input { margin-top: 3px; }
+.bdata-task-option:hover { border-color: var(--zyfw-accent); }
+.bdata-task-option input { margin-top: 2px; }
+.bdata-task-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.bdata-task-title {
+  color: var(--zyfw-text);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.bdata-task-meta {
+  color: var(--zyfw-text-secondary);
+  font-size: 12px;
+}
 .zy-btn {
   height: 32px;
   padding: 0 16px;

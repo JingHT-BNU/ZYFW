@@ -362,11 +362,17 @@
         checkbox.value = task.id;
         checkbox.checked = selectedIds.indexOf(String(task.id)) >= 0;
         item.appendChild(checkbox);
-        var text = document.createElement("span");
-        text.textContent = (task.name || "任务") + " · "
-          + taskSummary(task);
-        text.title = task.description || "";
-        item.appendChild(text);
+        var copy = document.createElement("span");
+        copy.className = "bdata-task-copy";
+        var taskTitle = document.createElement("span");
+        taskTitle.className = "bdata-task-title";
+        taskTitle.textContent = task.description || task.name || "未命名任务";
+        copy.appendChild(taskTitle);
+        var taskMeta = document.createElement("span");
+        taskMeta.className = "bdata-task-meta";
+        taskMeta.textContent = taskSummary(task);
+        copy.appendChild(taskMeta);
+        item.appendChild(copy);
         taskList.appendChild(item);
       });
       card.appendChild(taskList);
