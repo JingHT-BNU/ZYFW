@@ -26,6 +26,7 @@ SCHEDULE_API = (
 )
 VIDEO_PAGE = "https://spoc.bnu.edu.cn/pro/lms/{sign}/{cid}/video/{leaf_id}"
 STUDY_URL_RE = re.compile(r"/pro/lms/([^/]+)/([^/]+)/studycontent")
+VIDEO_URL_RE = re.compile(r"/pro/lms/([^/]+)/([^/]+)/video/([^/?#]+)")
 STATUS_EXACT_XPATH = (
     '//*[@id="app"]/div/div[2]/div[2]/div/div/div[1]'
     '/div[1]/div[2]/span/span[1]'
@@ -183,6 +184,13 @@ def parse_study_url(url: str) -> tuple[str, str] | None:
     return (match.group(1), match.group(2)) if match else None
 
 
+def parse_video_url(url: str) -> tuple[str, str, str] | None:
+    match = VIDEO_URL_RE.search(str(url or ""))
+    if not match:
+        return None
+    return match.group(1), match.group(2), match.group(3)
+
+
 def _fetch_json(driver, url: str) -> dict:
     driver.set_script_timeout(30)
     result = driver.execute_async_script(_FETCH_JSON_JS, url, XTBZ_HEADERS)
@@ -331,20 +339,9 @@ def cache_course(ctx, driver, card: CourseCard, url: str,
     time.sleep(0.8)
     body_text = normalize(driver.find_element(By.TAG_NAME, "body").text)
     course = {
-        "id": f"spoc:{sign}:{cid}",
-        "platform": "spoc",
-        "sign": sign,
-        "cid": cid,
-        "title": card.title,
-        "subtitle": card.subtitle,
+        "name": card.title,
         "url": url,
-        "has_tasks": False,
-        "tasks": [],
-        "videos": [],
-        "assignments": [],
-        "chapters": [],
-        "extra_videos": [],
-        "cached_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "chapters": {},
     }
     if NO_CONTENT_TEXT in body_text:
         ctx.log(f"SPOC 无学习内容: {card.title}")
@@ -354,39 +351,30 @@ def cache_course(ctx, driver, card: CourseCard, url: str,
     schedule = fetch_schedule(driver, sign, cid)
     icons = _dom_item_icons(driver)
     chapters: dict[str, dict] = {}
+    video_count = 0
+    exam_count = 0
     for leaf in leaves:
         if not leaf.get("shown") or leaf.get("locked"):
             continue
         icon = icons.get(leaf["name"], "")
-        completed, percent = leaf_progress(schedule, leaf["id"])
+        completed, _percent = leaf_progress(schedule, leaf["id"])
         is_video = (
             VIDEO_CLASS in icon or leaf.get("leaf_type") == 0)
-        entry = {
-            "id": str(leaf["id"]),
-            "title": leaf["name"],
-            "chapter": leaf["chapter"],
-            "icon": icon,
-            "leaf_type": leaf.get("leaf_type"),
-            "complete": completed,
-            "percent": round(percent, 1),
-        }
         chapter_name = leaf["chapter"] or "未分章"
         chapter = chapters.setdefault(chapter_name, {
-            "id": "",
             "name": chapter_name,
-            "videos": [],
-            "assignments": [],
+            "videos": {},
+            "exams": {},
         })
         if is_video:
-            course["videos"].append(entry)
-            chapter["videos"].append(entry)
-            course["tasks"].append({
-                **entry,
-                "completion": {
-                    "complete": completed,
-                    "percent": round(percent, 1),
-                },
-            })
+            video_key = str(len(chapter["videos"]))
+            chapter["videos"][video_key] = {
+                "name": leaf["name"],
+                "url": VIDEO_PAGE.format(
+                    sign=sign, cid=cid, leaf_id=leaf["id"]),
+                "finished": completed,
+            }
+            video_count += 1
         else:
             is_assignment = (
                 any(marker in icon for marker in ASSIGNMENT_CLASSES)
@@ -395,25 +383,25 @@ def cache_course(ctx, driver, card: CourseCard, url: str,
                        ("作业", "测试", "练习", "考试"))
             )
             if is_assignment:
-                course["assignments"].append(entry)
-                chapter["assignments"].append(entry)
+                exam_key = str(len(chapter["exams"]))
+                chapter["exams"][exam_key] = {
+                    "name": leaf["name"],
+                    "url": (
+                        "https://spoc.bnu.edu.cn/ai-workspace/lms-graph/"
+                        f"{cid}/quiz/{leaf['id']}"
+                    ),
+                    "finished": completed,
+                }
+                exam_count += 1
 
-    for index, chapter in enumerate(chapters.values(), start=1):
-        chapter["id"] = f"{course['id']}:chapter:{index}"
-    course["chapters"] = [
-        chapter for chapter in chapters.values() if chapter["videos"]
-    ]
-    course["has_tasks"] = bool(course["videos"])
-    completed = sum(1 for video in course["videos"] if video["complete"])
-    course["completion"] = {
-        "videos": len(course["videos"]),
-        "videos_complete": completed,
-        "assignments": len(course["assignments"]),
-        "complete": bool(course["videos"]) and completed == len(course["videos"]),
+    course["chapters"] = {
+        str(index): chapter
+        for index, chapter in enumerate(chapters.values())
+        if chapter["videos"]
     }
     ctx.log(
-        f"已缓存 SPOC 课程 {card.title}: {len(course['videos'])} 个视频, "
-        f"{len(course['assignments'])} 个作业/测试")
+        f"已缓存 SPOC 课程 {card.title}: {video_count} 个视频, "
+        f"{exam_count} 个作业/测试")
     return course
 
 

@@ -1,7 +1,7 @@
 {
   "id": "bdata-autoplay",
   "name": "BNU刷课",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "使用全局北师大统一认证账号统一管理师道云与 SPOC 课程，支持课程详情缓存、章节筛选、混合并发刷课，以及师道云自动答题和评论回复。",
   "entry": "plugin.py",
   "config_ui": "ui.html",

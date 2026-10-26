@@ -165,38 +165,108 @@
   }
 
   function courseSummary(course) {
-    var completion = course.completion || {};
+    var videos = [];
+    var exams = [];
+    (course.chapters || []).forEach(function (chapter) {
+      videos = videos.concat(chapter.videos || []);
+      exams = exams.concat(chapter.exams || []);
+    });
+    var finished = videos.filter(function (video) {
+      return video.finished === true;
+    }).length;
     if (course.platform === "spoc") {
-      return "视频 " + (completion.videos_complete || 0) + "/" +
-        (completion.videos || (course.videos || []).length) +
-        " · 作业/测试 " + (course.assignments || []).length;
+      return "视频 " + finished + "/" + videos.length +
+        " · 作业/测试 " + exams.length;
     }
-    return "任务 " + (completion.tasks_complete || 0) + "/" +
-      (completion.tasks || (course.tasks || []).length) +
-      " · 任务外视频 " + (course.extra_videos || []).length;
+    var tasksDone = (course.tasks || []).filter(function (task) {
+      return task.finished === true;
+    }).length;
+    return "任务 " + tasksDone + "/" + (course.tasks || []).length +
+      " · 视频 " + videos.length;
   }
 
   function taskSummary(task) {
-    var completion = task.completion || {};
-    var parts = [completion.complete ? "已完成" : "未完成"];
-    if (completion.video_percent !== null
-        && completion.video_percent !== undefined) {
-      parts.push("视频 " + completion.video_percent + "%");
+    var parts = [task.finished ? "已完成" : "未完成"];
+    if (task.total_video_progress !== null
+        && task.total_video_progress !== undefined) {
+      parts.push("视频 " + task.total_video_progress + "%");
     }
-    ["questionnaires", "comments", "replies"].forEach(function (key) {
-      var item = completion[key];
-      if (!item || item.total === undefined) return;
-      var label = key === "questionnaires" ? "问卷"
-        : key === "comments" ? "评论" : "回复";
-      parts.push(label + " " + item.done + "/" + item.total);
+    if (task.questionnaire_progress) parts.push("问卷完成");
+    if (task.commit_progress) parts.push("评论完成");
+    if (task.reply_progress) parts.push("回复完成");
+    var videoCount = 0;
+    var examCount = 0;
+    Object.values(task.videos || {}).forEach(function (items) {
+      videoCount += items.length;
     });
-    if ((task.videos || []).length) {
-      parts.push("视频 " + task.videos.length);
-    }
-    if ((task.tests || []).length) {
-      parts.push("测试 " + task.tests.length);
+    Object.values(task.exams || {}).forEach(function (items) {
+      examCount += items.length;
+    });
+    if (videoCount) parts.push("视频 " + videoCount);
+    if (examCount) {
+      parts.push("测试 " + (task.exam_progress || 0) + "/" + examCount);
     }
     return parts.join(" · ");
+  }
+
+  function normalizeChapters(rawChapters, prefix) {
+    return Object.keys(rawChapters || {}).sort(function (a, b) {
+      return Number(a) - Number(b);
+    }).map(function (key) {
+      var chapter = rawChapters[key] || {};
+      return {
+        id: prefix + ":chapter:" + key,
+        key: String(key),
+        name: chapter.name || "",
+        xpath: chapter.XPATH || "",
+        videos: Object.keys(chapter.videos || {}).sort(function (a, b) {
+          return Number(a) - Number(b);
+        }).map(function (videoKey) {
+          return Object.assign({}, chapter.videos[videoKey], {
+            key: String(videoKey)
+          });
+        }),
+        exams: Object.keys(chapter.exams || {}).sort(function (a, b) {
+          return Number(a) - Number(b);
+        }).map(function (examKey) {
+          return Object.assign({}, chapter.exams[examKey], {
+            key: String(examKey)
+          });
+        })
+      };
+    });
+  }
+
+  function normalizeCourses(data) {
+    var courses = [];
+    Object.keys((data && data.bdata) || {}).forEach(function (cid) {
+      var raw = data.bdata[cid] || {};
+      courses.push({
+        id: "bdata:" + cid,
+        platform: "bdata",
+        cid: cid,
+        title: raw.name || cid,
+        chapters: normalizeChapters(raw.chapters, "bdata:" + cid),
+        tasks: (raw.tasks || []).map(function (task, index) {
+          return Object.assign({}, task, { id: String(index) });
+        })
+      });
+    });
+    ((data && data.spoc) || []).forEach(function (raw) {
+      var chapters = normalizeChapters(raw.chapters, raw.url || raw.name);
+      courses.push({
+        id: raw.url || raw.name,
+        platform: "spoc",
+        title: raw.name || raw.url,
+        url: raw.url || "",
+        chapters: chapters,
+        tasks: [],
+        has_tasks: chapters.some(function (chapter) {
+          return (chapter.videos || []).length > 0;
+        })
+      });
+    });
+    return courses;
   }
 
   function choiceRow(className, value, title, detail) {
@@ -341,7 +411,7 @@
     configuredPlans = plans || {};
     var root = $("bnu-course-plans");
     root.textContent = "";
-    var courses = Object.values((data && data.courses) || {});
+    var courses = normalizeCourses(data);
     var hiddenEmpty = 0;
     var visible = courses.filter(function (course) {
       if (course.platform === "spoc" && !course.has_tasks) {
@@ -749,8 +819,13 @@
   function renderWorkers(progress, plugin) {
     var panel = $("bnu-progress-panel");
     var root = $("bnu-workers");
+    if (plugin && plugin.running) {
+      panel.hidden = false;
+      if (!root.children.length) {
+        $("bnu-overall-progress").textContent = "正在启动分线程…";
+      }
+    }
     if (!progress || !progress.workers) {
-      if (plugin && plugin.running) panel.hidden = false;
       return;
     }
     panel.hidden = false;
@@ -831,7 +906,7 @@
     window.ZyfwBnuSave = function () {
       return save(true, false, true);
     };
-    progressTimer = setInterval(pollReviewAndProgress, 1500);
+    progressTimer = setInterval(pollReviewAndProgress, 700);
     try {
       var data = await Z.api("plugins");
       var plugin = (data.plugins || []).find(function (item) {

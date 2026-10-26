@@ -47,8 +47,6 @@ COURSE_DATA_API = "/wechatapi/api/learn/getCourseData"
 COURSE_LIST_API = "/wechatapi/api/learn/getMyCourses"
 USER_BINDS_API = "/wechatapi/api/user/getMyBinds"
 COOKIE_LIFE_SECONDS = 7 * 86400
-TASK_CACHE_VERSION = 4
-
 TASK_BUTTON_XPATH = (
     '//*[@id="app"]/section/main/div/div[2]/div[2]/div/div/div[3]'
     '/span/button[1]'
@@ -539,6 +537,24 @@ def _task_groups_snapshot(driver) -> list[dict]:
     const pane = document.getElementById('pane-first');
     if (!pane) return [];
     const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
+    const xpath = el => {
+      const parts = [];
+      let node = el;
+      while (node && node.nodeType === 1) {
+        if (node.id) {
+          parts.unshift(`//*[@id="${node.id}"]`);
+          return parts.join('/');
+        }
+        let index = 1;
+        let sibling = node;
+        while ((sibling = sibling.previousElementSibling)) {
+          if (sibling.tagName === node.tagName) index += 1;
+        }
+        parts.unshift(`${node.tagName.toLowerCase()}[${index}]`);
+        node = node.parentElement;
+      }
+      return '/' + parts.join('/');
+    };
     const cards = Array.from(pane.children)
         .filter(el => el.classList && el.classList.contains('el-card'));
     return cards.map((card, groupIndex) => {
@@ -558,6 +574,7 @@ def _task_groups_snapshot(driver) -> list[dict]:
                     title: norm(clone.textContent),
                     icon: icon ? (icon.getAttribute('d') || '').slice(0, 16) : '',
                     tags,
+                    xpath: xpath(span)
                 };
             }).filter(item => item.title);
         return {
@@ -647,6 +664,24 @@ def click_task_entry(driver, title: str) -> None:
     time.sleep(1.0)
 
 
+def click_task_entry_xpath(driver, xpath: str) -> bool:
+    if not xpath:
+        return False
+    try:
+        element = driver.find_element(By.XPATH, xpath)
+    except WebDriverException:
+        return False
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block:'center'});"
+        "arguments[0].click();", element)
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if not _task_pane_ready(driver, require_cards=False):
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def collect_task_videos(driver) -> list[dict]:
     """Open the task dialog and collect required videos by their play icon."""
     videos: dict[str, dict] = {}
@@ -666,35 +701,26 @@ def task_cache_account(ctx: PluginContext) -> str:
     return normalize_title(ctx.username)
 
 
-def _empty_task_cache_store() -> dict:
-    return {
-        "version": TASK_CACHE_VERSION,
-        "updated_at": "",
-        "accounts": {},
-    }
-
-
 def _read_task_cache_store(ctx: PluginContext) -> dict:
     data = _read_json_object(task_cache_path(ctx))
-    if not data or data.get("version") != TASK_CACHE_VERSION:
-        return _empty_task_cache_store()
-    if not isinstance(data.get("accounts"), dict):
-        data["accounts"] = {}
+    if not data or isinstance(data.get("version"), int):
+        return {}
     return data
 
 
 def load_task_cache(ctx: PluginContext) -> dict:
     account = task_cache_account(ctx)
     store = _read_task_cache_store(ctx)
-    entry = store["accounts"].get(account)
+    entry = store.get(account)
     if not isinstance(entry, dict):
         entry = {}
-    courses = entry.get("courses")
     return {
-        "version": TASK_CACHE_VERSION,
         "account": account,
         "updated_at": str(entry.get("updated_at") or ""),
-        "courses": courses if isinstance(courses, dict) else {},
+        "bdata": entry.get("bdata")
+        if isinstance(entry.get("bdata"), dict) else {},
+        "spoc": entry.get("spoc")
+        if isinstance(entry.get("spoc"), list) else [],
     }
 
 
@@ -705,13 +731,13 @@ def save_task_cache(ctx: PluginContext, data: dict) -> None:
     store = _read_task_cache_store(ctx)
     updated_at = str(
         data.get("updated_at") or time.strftime("%Y-%m-%d %H:%M:%S"))
-    store["accounts"][account] = {
-        "username": account,
+    store[account] = {
         "updated_at": updated_at,
-        "courses": data.get("courses")
-        if isinstance(data.get("courses"), dict) else {},
+        "bdata": data.get("bdata")
+        if isinstance(data.get("bdata"), dict) else {},
+        "spoc": data.get("spoc")
+        if isinstance(data.get("spoc"), list) else [],
     }
-    store["updated_at"] = updated_at
     _write_json_atomic(task_cache_path(ctx), store)
 
 
@@ -723,22 +749,44 @@ def collect_course_menu_structure(driver) -> tuple[list[dict], list[dict]]:
         rows = driver.execute_script(
             """
             const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
+            const xpath = el => {
+              const parts = [];
+              let node = el;
+              while (node && node.nodeType === 1) {
+                if (node.id) {
+                  parts.unshift(`//*[@id="${node.id}"]`);
+                  return parts.join('/');
+                }
+                let index = 1;
+                let sibling = node;
+                while ((sibling = sibling.previousElementSibling)) {
+                  if (sibling.tagName === node.tagName) index += 1;
+                }
+                parts.unshift(
+                  `${node.tagName.toLowerCase()}[${index}]`);
+                node = node.parentElement;
+              }
+              return '/' + parts.join('/');
+            };
             return Array.from(document.querySelectorAll(
                 '.el-menu > li.el-sub-menu')).map((chapter, index) => {
               const title = chapter.querySelector(
                   ':scope > .el-sub-menu__title');
               const items = Array.from(chapter.querySelectorAll(
-                  ':scope > ul li.el-menu-item')).map(item => {
+                  ':scope > ul li.el-menu-item')).map((item, videoIndex) => {
                 const path = item.querySelector('svg path');
                 return {
+                  index: videoIndex,
                   title: norm(item.innerText),
-                  icon: path ? (path.getAttribute('d') || '') : ''
+                  icon: path ? (path.getAttribute('d') || '') : '',
+                  xpath: xpath(item)
                 };
               }).filter(item => item.title &&
                   item.icon.startsWith(arguments[0]));
               return {
                 index,
                 name: norm(title && title.innerText),
+                xpath: xpath(chapter),
                 videos: items
               };
             }).filter(chapter => chapter.name && chapter.videos.length);
@@ -752,20 +800,25 @@ def collect_course_menu_structure(driver) -> tuple[list[dict], list[dict]]:
 
     result: list[dict] = []
     videos: dict[str, dict] = {}
-    for index, chapter in enumerate(chapters, start=1):
+    for chapter_index, chapter in enumerate(chapters):
         name = normalize_title(chapter.get("name"))
         chapter_videos = []
-        for video in chapter.get("videos", []):
+        for video_index, video in enumerate(chapter.get("videos", [])):
             title = normalize_title(video.get("title"))
             if not title:
                 continue
-            entry = {"title": title, "outside_tasks": True}
+            entry = {
+                "index": video_index,
+                "title": title,
+                "xpath": str(video.get("xpath") or ""),
+            }
             chapter_videos.append(entry)
             videos[title] = entry
         if chapter_videos:
             result.append({
-                "id": f"chapter:{index}",
+                "index": chapter_index,
                 "name": name,
+                "xpath": str(chapter.get("xpath") or ""),
                 "videos": chapter_videos,
             })
     return result, list(videos.values())
@@ -821,6 +874,7 @@ def _task_cache_group(cid: str, group: dict, index: int) -> dict:
             "title": normalize_title(item.get("title")),
             "tags": [normalize_title(tag) for tag in item.get("tags", [])],
             "icon": str(item.get("icon") or ""),
+            "xpath": str(item.get("xpath") or ""),
         }
         icon = str(item.get("icon") or "")
         items_out.append(entry)
@@ -846,6 +900,18 @@ def _task_cache_group(cid: str, group: dict, index: int) -> dict:
     }
 
 
+def _tag_completion(tags: list[str]) -> tuple[str, bool]:
+    progress = ""
+    finished = False
+    for tag in tags:
+        value = normalize_title(tag)
+        if "已完成" in value or "已提交" in value:
+            finished = True
+        if "%" in value and not progress:
+            progress = value
+    return progress, finished
+
+
 def cache_course_tasks(ctx: PluginContext, driver, course_url: str,
                        cid: str) -> dict:
     driver.get(course_url)
@@ -857,57 +923,117 @@ def cache_course_tasks(ctx: PluginContext, driver, course_url: str,
         _task_cache_group(cid, group, index)
         for index, group in enumerate(groups)
     ]
-    chapters, menu_videos = collect_course_menu_structure(driver)
-    for index, chapter in enumerate(chapters, start=1):
-        chapter["id"] = f"bdata:{cid}:chapter:{index}"
-    task_video_titles = {
-        video["title"] for task in tasks for video in task["videos"]
+    chapter_rows, _menu_videos = collect_course_menu_structure(driver)
+    task_video_by_title = {
+        normalize_title(video.get("title")): (task_index, video)
+        for task_index, task in enumerate(tasks)
+        for video in task.get("videos", [])
     }
-    extra_videos = [
-        video for video in menu_videos
-        if video["title"] not in task_video_titles
-    ]
-    chapter_ids_by_video = {
-        video["title"]: chapter["id"]
-        for chapter in chapters for video in chapter["videos"]
+    task_exam_by_title = {
+        normalize_title(exam.get("title")): (task_index, exam)
+        for task_index, task in enumerate(tasks)
+        for exam in task.get("tests", [])
     }
+    chapters: dict[str, dict] = {}
+    video_lookup: dict[str, tuple[str, str]] = {}
+    exam_lookup: dict[str, tuple[str, str]] = {}
+    for chapter_index, row in enumerate(chapter_rows):
+        chapter_key = str(chapter_index)
+        chapter = {
+            "name": row["name"],
+            "XPATH": row["xpath"],
+            "videos": {},
+            "exams": {},
+        }
+        for video_index, video in enumerate(row.get("videos", [])):
+            name = normalize_title(video.get("title"))
+            task_index, task_video = task_video_by_title.get(
+                name, (-1, {}))
+            progress, finished = _tag_completion(
+                task_video.get("tags", []))
+            task = tasks[task_index] if task_index >= 0 else {}
+            completion = task.get("completion", {})
+            comments = completion.get("comments") or {}
+            replies = completion.get("replies") or {}
+            video_key = str(video_index)
+            chapter["videos"][video_key] = {
+                "name": name,
+                "XPATH": video.get("xpath", ""),
+                "progress": progress,
+                "total": "",
+                "finished": finished,
+                "commit": int(
+                    comments.get("done", 0) >= comments.get("total", 1)
+                ) if comments else 0,
+                "reply": int(
+                    replies.get("done", 0) >= replies.get("total", 1)
+                ) if replies else 0,
+            }
+            video_lookup[name] = (chapter_key, video_key)
+        chapters[chapter_key] = chapter
+
+    # Tests are present in the task dialog rather than the visible chapter menu.
+    # Attach them to the chapter containing the task's first required video.
+    for exam_title, (task_index, exam) in task_exam_by_title.items():
+        task = tasks[task_index]
+        chapter_key = ""
+        for video in task.get("videos", []):
+            location = video_lookup.get(normalize_title(video.get("title")))
+            if location:
+                chapter_key = location[0]
+                break
+        if not chapter_key:
+            continue
+        chapter = chapters[chapter_key]
+        exam_key = str(len(chapter["exams"]))
+        _progress, finished = _tag_completion(exam.get("tags", []))
+        chapter["exams"][exam_key] = {
+            "name": exam_title,
+            "XPATH": exam.get("xpath", ""),
+            "finished": finished,
+        }
+        exam_lookup[exam_title] = (chapter_key, exam_key)
+
+    compact_tasks: list[dict] = []
     for task in tasks:
-        task["chapter_ids"] = list(dict.fromkeys(
-            chapter_ids_by_video.get(video["title"], "")
-            for video in task["videos"]
-            if chapter_ids_by_video.get(video["title"])
-        ))
-    completed_tasks = sum(
-        1 for task in tasks if task.get("completion", {}).get("complete"))
+        video_refs: dict[str, list[str]] = {}
+        for video in task.get("videos", []):
+            location = video_lookup.get(normalize_title(video.get("title")))
+            if location:
+                video_refs.setdefault(location[0], []).append(location[1])
+        exam_refs: dict[str, list[str]] = {}
+        for exam in task.get("tests", []):
+            location = exam_lookup.get(normalize_title(exam.get("title")))
+            if location:
+                exam_refs.setdefault(location[0], []).append(location[1])
+        completion = task.get("completion", {})
+        comments = completion.get("comments") or {}
+        replies = completion.get("replies") or {}
+        questionnaire = completion.get("questionnaires") or {}
+        compact_tasks.append({
+            "name": task["description"],
+            "videos": video_refs,
+            "exams": exam_refs,
+            "total_video_progress": completion.get("video_percent"),
+            "commit_progress": bool(
+                comments and comments.get("done", 0) >= comments.get(
+                    "total", 1)),
+            "reply_progress": bool(
+                replies and replies.get("done", 0) >= replies.get(
+                    "total", 1)),
+            "questionnaire_progress": bool(
+                questionnaire
+                and questionnaire.get("done", 0) >= questionnaire.get(
+                    "total", 1)),
+            "exam_progress": sum(
+                1 for exam in task.get("tests", [])
+                if _tag_completion(exam.get("tags", []))[1]),
+            "finished": bool(completion.get("complete")),
+        })
     return {
-        "id": f"bdata:{cid}",
-        "platform": "bdata",
-        "cid": cid,
-        "url": course_url,
-        "title": title,
-        "has_tasks": bool(tasks),
-        "cached_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "tasks": tasks,
-        "videos": [
-            video for task in tasks for video in task.get("videos", [])
-        ],
-        "tests": [
-            test for task in tasks for test in task.get("tests", [])
-        ],
-        "summaries": [
-            summary for task in tasks for summary in task.get("summaries", [])
-        ],
-        "assignments": [],
+        "name": title,
         "chapters": chapters,
-        "extra_videos": extra_videos,
-        "completion": {
-            "tasks": len(tasks),
-            "tasks_complete": completed_tasks,
-            "videos": sum(
-                len(task.get("videos", [])) for task in tasks),
-            "extra_videos": len(extra_videos),
-            "complete": bool(tasks) and completed_tasks == len(tasks),
-        },
+        "tasks": compact_tasks,
     }
 
 
@@ -915,7 +1041,7 @@ def refresh_task_cache(ctx: PluginContext, driver,
                        discovered: list[dict]) -> dict:
     cache = load_task_cache(ctx)
     errors = 0
-    current_ids = {f"bdata:{course['cid']}" for course in discovered}
+    current_ids = {str(course["cid"]) for course in discovered}
     for index, course_info in enumerate(discovered, start=1):
         course_url = course_info["url"]
         cid = course_info["cid"]
@@ -925,13 +1051,13 @@ def refresh_task_cache(ctx: PluginContext, driver,
             title=f"读取任务缓存: {title}")
         try:
             course = cache_course_tasks(ctx, driver, course_url, cid)
-            cache["courses"][course["id"]] = course
+            cache["bdata"][cid] = course
             cache["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             save_task_cache(ctx, cache)
             ctx.log(
-                f"已缓存课程 {course['title']}: "
+                f"已缓存课程 {course['name']}: "
                 f"{len(course['tasks'])} 个任务, "
-                f"{len(course['extra_videos'])} 个任务外视频")
+                f"{len(course['chapters'])} 个章节")
         except (RuntimeError, WebDriverException) as exc:
             errors += 1
             ctx.log(f"课程任务缓存失败({cid}): {exc}")
@@ -939,9 +1065,9 @@ def refresh_task_cache(ctx: PluginContext, driver,
         stage="cache", done=len(discovered), total=len(discovered),
         title="任务缓存完成")
     if errors == 0:
-        cache["courses"] = {
-            course_id: course for course_id, course in cache["courses"].items()
-            if not course_id.startswith("bdata:") or course_id in current_ids
+        cache["bdata"] = {
+            cid: course for cid, course in cache["bdata"].items()
+            if cid in current_ids
         }
     cache["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     save_task_cache(ctx, cache)
@@ -952,7 +1078,7 @@ def refresh_task_cache(ctx: PluginContext, driver,
 
 def refresh_spoc_cache(ctx: PluginContext, driver) -> tuple[dict, int, int]:
     cache = load_task_cache(ctx)
-    discovered_ids: set[str] = set()
+    discovered_urls: set[str] = set()
 
     def report(done: int, total: int, title: str) -> None:
         ctx.progress(
@@ -960,8 +1086,13 @@ def refresh_spoc_cache(ctx: PluginContext, driver) -> tuple[dict, int, int]:
             title=f"读取 SPOC 课程: {title}")
 
     def save_course(course: dict) -> None:
-        discovered_ids.add(course["id"])
-        cache["courses"][course["id"]] = course
+        url = str(course.get("url") or "")
+        discovered_urls.add(url)
+        cache["spoc"] = [
+            item for item in cache["spoc"]
+            if item.get("url") != url
+        ]
+        cache["spoc"].append(course)
         cache["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         save_task_cache(ctx, cache)
 
@@ -971,15 +1102,14 @@ def refresh_spoc_cache(ctx: PluginContext, driver) -> tuple[dict, int, int]:
     except (RuntimeError, WebDriverException) as exc:
         ctx.log(f"SPOC 全量课程爬取失败: {exc}")
         return cache, 0, 1
-    if discovered_ids and failed == 0:
-        cache["courses"] = {
-            course_id: course for course_id, course in cache["courses"].items()
-            if not course_id.startswith("spoc:")
-            or course_id in discovered_ids
-        }
+    if discovered_urls and failed == 0:
+        cache["spoc"] = [
+            course for course in cache["spoc"]
+            if course.get("url") in discovered_urls
+        ]
         cache["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         save_task_cache(ctx, cache)
-    return cache, len(discovered_ids), failed
+    return cache, len(discovered_urls), failed
 
 
 def _wait_task_dialog_closed(driver, timeout: float = 1.8) -> bool:
@@ -1575,7 +1705,8 @@ def _login(ctx: PluginContext, driver) -> None:
         raise RuntimeError("统一身份认证登录超时, 请检查账号密码")
 
 
-def ensure_authenticated(ctx: PluginContext, driver) -> list[dict]:
+def ensure_authenticated(ctx: PluginContext, driver,
+                         discover_courses: bool = True) -> list[dict]:
     expected_account = task_cache_account(ctx)
     if not expected_account:
         raise RuntimeError("未配置统一身份认证账号")
@@ -1587,9 +1718,11 @@ def ensure_authenticated(ctx: PluginContext, driver) -> list[dict]:
         try:
             bound_account = _bound_bnu_account(driver)
             if bound_account == expected_account:
-                courses = list_my_courses(driver)
+                courses = list_my_courses(driver) if discover_courses else []
                 ctx.log(
-                    f"使用缓存 Cookie 登录师道云，发现 {len(courses)} 门课程")
+                    "使用缓存 Cookie 登录师道云"
+                    + (f"，发现 {len(courses)} 门课程"
+                       if discover_courses else ""))
                 return courses
             if bound_account:
                 ctx.log(
@@ -1614,10 +1747,11 @@ def ensure_authenticated(ctx: PluginContext, driver) -> list[dict]:
         actual = bound_account or "未识别"
         raise RuntimeError(
             f"登录账号校验失败: 配置为 {expected_account}, 网页账号为 {actual}")
-    courses = list_my_courses(driver)
+    courses = list_my_courses(driver) if discover_courses else []
     save_cookies(ctx, driver.get_cookies())
-    ctx.log(
-        f"统一身份认证登录成功，发现 {len(courses)} 门课程，Cookie 已缓存")
+    ctx.log("统一身份认证登录成功"
+            + (f"，发现 {len(courses)} 门课程" if discover_courses else "")
+            + "，Cookie 已缓存")
     return courses
 
 
@@ -1633,6 +1767,19 @@ def click_menu_title(driver, title: str) -> bool:
     return true;
     """
     return bool(driver.execute_script(js, title))
+
+
+def click_menu_xpath(driver, xpath: str) -> bool:
+    if not xpath:
+        return False
+    try:
+        element = driver.find_element(By.XPATH, xpath)
+    except WebDriverException:
+        return False
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block:'center'});"
+        "arguments[0].click();", element)
+    return True
 
 
 def wait_and_click_menu_title(driver, title: str,
@@ -1928,10 +2075,10 @@ class PlayTracker:
             }
 
 
-def _course_plan(plans: dict, course: dict) -> dict:
-    plan = plans.get(course.get("id"))
+def _course_plan(plans: dict, key: str) -> dict:
+    plan = plans.get(key)
     if not isinstance(plan, dict):
-        plan = plans.get(course.get("cid"))
+        plan = plans.get(key.replace("bdata:", "", 1))
     return plan if isinstance(plan, dict) else {
         "enabled": True,
         "scope": "all",
@@ -1943,26 +2090,32 @@ def _course_plan(plans: dict, course: dict) -> dict:
 def _bdata_job(course: dict, video: dict) -> dict:
     return {
         "platform": "bdata",
-        "key": f"bdata:{course['cid']}:{video['title']}",
-        "title": normalize_title(video.get("title")),
-        "course_id": course["id"],
-        "course_title": course.get("title") or course["cid"],
-        "course_url": course["url"],
+        "key": f"bdata:{course['cid']}:{video.get('XPATH') or video['name']}",
+        "title": normalize_title(video.get("name")),
+        "course_id": f"bdata:{course['cid']}",
+        "course_title": course.get("name") or course["cid"],
+        "course_url": (
+            "https://bdata.bnu.edu.cn/course?cid=" + course["cid"]),
         "cid": course["cid"],
+        "xpath": str(video.get("XPATH") or ""),
     }
 
 
 def _spoc_job(course: dict, video: dict) -> dict:
+    parsed = spoc_platform.parse_video_url(video.get("url"))
+    if not parsed:
+        return {}
+    sign, cid, leaf_id = parsed
     return {
         "platform": "spoc",
-        "key": f"spoc:{course['sign']}:{course['cid']}:{video['id']}",
-        "title": normalize_title(video.get("title")),
-        "course_id": course["id"],
-        "course_title": course.get("title") or course["cid"],
+        "key": f"spoc:{sign}:{cid}:{leaf_id}",
+        "title": normalize_title(video.get("name")),
+        "course_id": course["url"],
+        "course_title": course.get("name") or cid,
         "course_url": course["url"],
-        "sign": course["sign"],
-        "cid": course["cid"],
-        "leaf_id": video["id"],
+        "sign": sign,
+        "cid": cid,
+        "leaf_id": leaf_id,
     }
 
 
@@ -1973,96 +2126,139 @@ def build_unified_work(
     spoc_jobs: dict[str, dict] = {}
     quiz_items: list[dict] = []
     interaction_items: list[dict] = []
-    for course in cache.get("courses", {}).values():
-        if not isinstance(course, dict):
+    plans = plans if isinstance(plans, dict) else {}
+    for cid, raw_course in cache.get("bdata", {}).items():
+        if not isinstance(raw_course, dict):
             continue
-        plan = _course_plan(plans if isinstance(plans, dict) else {}, course)
+        course = {**raw_course, "cid": str(cid)}
+        plan = _course_plan(plans, f"bdata:{cid}")
         if plan.get("enabled") is False:
             continue
         scope = str(plan.get("scope") or "all")
-        course_title = normalize_title(course.get("title")) or str(
-            course.get("cid") or course.get("id") or "")
-        if course.get("platform") == "bdata":
-            tasks = [
-                task for task in course.get("tasks", [])
-                if isinstance(task, dict)
-            ]
+        course_title = normalize_title(course.get("name")) or str(cid)
+        chapter_data = course.get("chapters")
+        chapters = chapter_data if isinstance(chapter_data, dict) else {}
+        tasks = [
+            task for task in course.get("tasks", [])
+            if isinstance(task, dict)
+        ]
+        chapter_ids = {
+            str(value).rsplit(":chapter:", 1)[-1]
+            for value in plan.get("chapter_ids", [])
+        }
+        task_ids = {str(value) for value in plan.get("task_ids", [])}
+        selected_tasks = [
+            task for index, task in enumerate(tasks)
+            if str(index) in task_ids
+        ]
+        if scope in {"all", "all_extra"}:
             selected_tasks = tasks
-            if scope == "selected":
-                task_ids = {str(value) for value in plan.get("task_ids", [])}
-                selected_tasks = [
-                    task for task in tasks if task.get("id") in task_ids
-                ]
-            elif scope == "chapters":
-                chapter_ids = {
-                    str(value) for value in plan.get("chapter_ids", [])
-                }
-                selected_tasks = [
-                    task for task in tasks
-                    if chapter_ids.intersection(
-                        str(value) for value in task.get("chapter_ids", []))
-                ]
-
-            if scope == "chapters":
-                chapter_ids = {
-                    str(value) for value in plan.get("chapter_ids", [])
-                }
-                videos = [
-                    video
-                    for chapter in course.get("chapters", [])
-                    if str(chapter.get("id")) in chapter_ids
-                    for video in chapter.get("videos", [])
-                ]
-            else:
-                videos = [
-                    video
-                    for task in selected_tasks
-                    for video in task.get("videos", [])
-                ]
-                if scope == "all_extra":
-                    videos += list(course.get("extra_videos", []))
-            for video in videos:
-                job = _bdata_job(course, video)
-                bdata_jobs[job["key"]] = job
-
-            if auto_answer:
-                for task in selected_tasks:
-                    for test in task.get("tests", []):
-                        if "已提交" in test.get("tags", []):
-                            continue
-                        quiz_items.append({
-                            "course_url": course["url"],
-                            "course_title": course_title,
-                            "title": normalize_title(test.get("title")),
-                        })
-            if comment_reply:
-                for task in selected_tasks:
-                    if (task_group_has(task, "评论")
-                            or task_group_has(task, "回复")):
-                        interaction_items.append({
-                            "course_url": course["url"],
-                            "course_title": course_title,
-                            "group": task,
-                        })
-        elif course.get("platform") == "spoc":
-            chapters = [
-                chapter for chapter in course.get("chapters", [])
-                if isinstance(chapter, dict)
+        elif scope == "chapters":
+            selected_tasks = [
+                task for task in tasks
+                if chapter_ids.intersection(
+                    str(chapter_key)
+                    for chapter_key in task.get("videos", {}))
             ]
-            if scope == "chapters":
-                chapter_ids = {
-                    str(value) for value in plan.get("chapter_ids", [])
-                }
-                videos = [
-                    video for chapter in chapters
-                    if str(chapter.get("id")) in chapter_ids
-                    for video in chapter.get("videos", [])
-                ]
-            else:
-                videos = list(course.get("videos", []))
-            for video in videos:
+
+        videos: list[dict] = []
+        if scope in {"all_extra", "chapters"}:
+            for chapter_key, chapter in chapters.items():
+                if scope == "chapters" and str(chapter_key) not in chapter_ids:
+                    continue
+                for video in chapter.get("videos", {}).values():
+                    if isinstance(video, dict):
+                        videos.append(video)
+        else:
+            for task in selected_tasks:
+                for chapter_key, indexes in task.get("videos", {}).items():
+                    chapter_videos = chapters.get(
+                        str(chapter_key), {}).get("videos", {})
+                    videos.extend(
+                        chapter_videos[str(index)]
+                        for index in indexes
+                        if str(index) in chapter_videos)
+        for video in videos:
+            job = _bdata_job(course, video)
+            bdata_jobs[job["key"]] = job
+
+        course_url = "https://bdata.bnu.edu.cn/course?cid=" + str(cid)
+        if auto_answer:
+            seen_exams: set[tuple[str, str]] = set()
+            for task in selected_tasks:
+                for chapter_key, indexes in task.get("exams", {}).items():
+                    chapter_exams = chapters.get(
+                        str(chapter_key), {}).get("exams", {})
+                    for index in indexes:
+                        exam = chapter_exams.get(str(index))
+                        if not isinstance(exam, dict) or exam.get("finished"):
+                            continue
+                        key = (str(chapter_key), str(index))
+                        if key in seen_exams:
+                            continue
+                        seen_exams.add(key)
+                        quiz_items.append({
+                            "course_url": course_url,
+                            "course_title": course_title,
+                            "title": normalize_title(exam.get("name")),
+                            "xpath": str(exam.get("XPATH") or ""),
+                        })
+        if comment_reply:
+            for task in selected_tasks:
+                if (task.get("commit_progress") is not False
+                        and task.get("reply_progress") is not False):
+                    continue
+                task_videos = []
+                for chapter_key, indexes in task.get("videos", {}).items():
+                    chapter_videos = chapters.get(
+                        str(chapter_key), {}).get("videos", {})
+                    for index in indexes:
+                        video = chapter_videos.get(str(index))
+                        if isinstance(video, dict):
+                            task_videos.append(video)
+                if not task_videos:
+                    continue
+                metrics = []
+                if task.get("commit_progress") is False:
+                    metrics.append("评论0/1")
+                if task.get("reply_progress") is False:
+                    metrics.append("回复0/1")
+                interaction_items.append({
+                    "course_url": course_url,
+                    "course_title": course_title,
+                    "group": {
+                        "description": task.get("name", ""),
+                        "metrics": metrics,
+                        "items": [{
+                            "title": video["name"],
+                            "icon": TASK_VIDEO_ICON_PREFIX,
+                        } for video in task_videos],
+                        "video_xpath": task_videos[0].get("XPATH", ""),
+                    },
+                })
+
+    for course in cache.get("spoc", []):
+        if not isinstance(course, dict) or not course.get("url"):
+            continue
+        plan = _course_plan(plans, course["url"])
+        if plan.get("enabled") is False:
+            continue
+        scope = str(plan.get("scope") or "all")
+        chapters = course.get("chapters")
+        chapters = chapters if isinstance(chapters, dict) else {}
+        chapter_ids = {
+            str(value).rsplit(":chapter:", 1)[-1]
+            for value in plan.get("chapter_ids", [])
+        }
+        for chapter_key, chapter in chapters.items():
+            if scope == "chapters" and str(chapter_key) not in chapter_ids:
+                continue
+            for video in chapter.get("videos", {}).values():
+                if not isinstance(video, dict):
+                    continue
                 job = _spoc_job(course, video)
-                spoc_jobs[job["key"]] = job
+                if job:
+                    spoc_jobs[job["key"]] = job
 
     jobs: list[dict] = []
     bdata_values = list(bdata_jobs.values())
@@ -2087,12 +2283,14 @@ def _play_bdata_job(ctx: PluginContext, driver, job: dict, worker_id: int,
         driver.get(job["course_url"])
         state["bdata_course"] = job["course_url"]
         time.sleep(0.8)
-    if not wait_and_click_menu_title(driver, title):
-        ensure_authenticated(ctx, driver)
-        driver.get(job["course_url"])
-        state["bdata_course"] = job["course_url"]
+    if not click_menu_xpath(driver, job.get("xpath", "")):
         if not wait_and_click_menu_title(driver, title):
-            raise RuntimeError("师道云课程目录中未找到该视频")
+            ensure_authenticated(ctx, driver)
+            driver.get(job["course_url"])
+            state["bdata_course"] = job["course_url"]
+            if not click_menu_xpath(driver, job.get("xpath", "")) \
+                    and not wait_and_click_menu_title(driver, title):
+                raise RuntimeError("师道云课程目录中未找到该视频")
     wait_active_menu_title(driver, title)
     media_duration = wait_video_duration(driver)
     if media_duration <= 0:
@@ -2288,9 +2486,11 @@ def _metric_value(metrics: list[str], name: str) -> tuple[int, int]:
 def run_quiz_item(ctx: PluginContext, driver, broker: ReviewBroker,
                   course_title: str, test_title: str,
                   model: tuple[str, str, str],
-                  full_auto: bool = False) -> bool:
+                  full_auto: bool = False,
+                  entry_xpath: str = "") -> bool:
     open_task_dialog(driver)
-    click_task_entry(driver, test_title)
+    if not click_task_entry_xpath(driver, entry_xpath):
+        click_task_entry(driver, test_title)
     fields = read_quiz_fields(
         driver,
         survey_strategy=str(ctx.cfg("survey_strategy", "fixed")),
@@ -2345,7 +2545,9 @@ def run_interaction_group(ctx: PluginContext, driver, broker: ReviewBroker,
 
     driver.get(course_url)
     open_task_dialog(driver)
-    click_task_entry(driver, video_title)
+    if not click_task_entry_xpath(
+            driver, str(group.get("video_xpath") or "")):
+        click_task_entry(driver, video_title)
     time.sleep(1.5)
     comments = read_comment_cards(driver)
     texts = [normalize_title(card.get("text")) for card in comments if card.get("text")]
@@ -2464,7 +2666,7 @@ def run_qa(ctx: PluginContext, driver,
 
 
 def run_qa_work(ctx: PluginContext, driver,
-                work: list[tuple[tuple[str, str], str, dict | str]],
+                work: list[tuple[tuple[str, str], str, dict | str, str]],
                 full_auto: bool = False) -> tuple[int, int]:
     """Run cached BData quiz/interaction work without touching video progress."""
     if not work:
@@ -2484,7 +2686,7 @@ def run_qa_work(ctx: PluginContext, driver,
     skipped = 0
     ctx.log(f"答题与互动任务共 {len(work)} 项，开始并行处理")
     try:
-        for course, course_title, work_item in work:
+        for course, course_title, work_item, entry_xpath in work:
             course_url, _cid = course
             driver.get(course_url)
             try:
@@ -2494,7 +2696,8 @@ def run_qa_work(ctx: PluginContext, driver,
                         f"{course_title} · {work_item}")
                     succeeded = run_quiz_item(
                         ctx, driver, broker, course_title, work_item, model,
-                        full_auto=full_auto)
+                        full_auto=full_auto,
+                        entry_xpath=entry_xpath)
                 else:
                     label = normalize_title(work_item.get("description"))
                     ctx.log(
@@ -2519,7 +2722,7 @@ def run_qa_work(ctx: PluginContext, driver,
 
 
 def run_qa_worker(ctx: PluginContext,
-                  work: list[tuple[tuple[str, str], str, dict | str]],
+                  work: list[tuple[tuple[str, str], str, dict | str, str]],
                   cookies: list[dict], full_auto: bool,
                   result: dict) -> None:
     driver = None
@@ -2539,78 +2742,9 @@ def run_qa_worker(ctx: PluginContext,
                 pass
 
 
-def build_combined_work(
-        cache: dict, courses: list[tuple[str, str]], plans: dict,
-        auto_answer: bool, comment_reply: bool) -> tuple[
-            list[dict], list[dict], list[dict]]:
-    if not isinstance(plans, dict):
-        plans = {}
-    video_jobs: dict[tuple[str, str], dict] = {}
-    quiz_items: list[dict] = []
-    interaction_items: list[dict] = []
-    for course_url, cid in courses:
-        course = cache["courses"].get(cid)
-        if not isinstance(course, dict):
-            continue
-        plan = plans.get(cid)
-        if not isinstance(plan, dict):
-            plan = {"enabled": True, "scope": "all", "task_ids": []}
-        if not plan.get("enabled", True):
-            continue
-        tasks = [
-            task for task in course.get("tasks", [])
-            if isinstance(task, dict)
-        ]
-        scope = str(plan.get("scope") or "all")
-        if scope == "selected":
-            selected_ids = {
-                str(task_id) for task_id in plan.get("task_ids", [])
-            }
-            tasks = [
-                task for task in tasks if task.get("id") in selected_ids
-            ]
-        course_title = normalize_title(course.get("title")) or cid
-        for task in tasks:
-            for video in task.get("videos", []):
-                title = normalize_title(video.get("title"))
-                video_jobs[(cid, title)] = {
-                    "title": title,
-                    "course_url": course_url,
-                    "cid": cid,
-                    "course_title": course_title,
-                }
-            if auto_answer:
-                for test in task.get("tests", []):
-                    if "已提交" in test.get("tags", []):
-                        continue
-                    quiz_items.append({
-                        "course_url": course_url,
-                        "course_title": course_title,
-                        "title": normalize_title(test.get("title")),
-                    })
-            if comment_reply and (
-                    task_group_has(task, "评论")
-                    or task_group_has(task, "回复")):
-                interaction_items.append({
-                    "course_url": course_url,
-                    "course_title": course_title,
-                    "group": task,
-                })
-        if scope == "all_extra":
-            for video in course.get("extra_videos", []):
-                title = normalize_title(video.get("title"))
-                video_jobs[(cid, title)] = {
-                    "title": title,
-                    "course_url": course_url,
-                    "cid": cid,
-                    "course_title": course_title,
-                }
-    return list(video_jobs.values()), quiz_items, interaction_items
-
-
 def run_combined(ctx: PluginContext, driver) -> None:
     cache = load_task_cache(ctx)
-    if not cache.get("courses"):
+    if not cache.get("bdata") and not cache.get("spoc"):
         raise RuntimeError(
             "尚未获取课程详情，请先点击“获取课程详情”")
     auto_answer = bool(ctx.cfg("auto_answer", False))
@@ -2636,20 +2770,37 @@ def run_combined(ctx: PluginContext, driver) -> None:
     if full_auto:
         ctx.log("警告: 全自动模式已启用，答题和互动内容将不经人工核验直接提交")
 
-    cookie_set = load_cookies(ctx) or driver.get_cookies()
     qa_result: dict = {}
     qa_thread = None
-    qa_work: list[tuple[tuple[str, str], str, dict | str]] = []
+    qa_work: list[tuple[tuple[str, str], str, dict | str, str]] = []
     if auto_answer:
         qa_work.extend(
-            ((item["course_url"], ""), item["course_title"], item["title"])
+            (
+                (item["course_url"], ""), item["course_title"],
+                item["title"], item.get("xpath", ""))
             for item in quiz_items
         )
     if comment_reply:
         qa_work.extend(
-            ((item["course_url"], ""), item["course_title"], item["group"])
+            (
+                (item["course_url"], ""), item["course_title"],
+                item["group"], "")
             for item in interaction_items
         )
+
+    platforms = {job["platform"] for job in jobs}
+    if qa_work:
+        platforms.add("bdata")
+    if "bdata" in platforms:
+        ctx.status("正在登录师道云…")
+        ensure_authenticated(ctx, driver, discover_courses=False)
+    if "spoc" in platforms:
+        ctx.status("正在登录 SPOC…")
+        spoc_platform.ensure_login(ctx, driver, load_cookies(ctx))
+    if platforms:
+        save_cookies(ctx, driver.get_cookies())
+    cookie_set = load_cookies(ctx) or driver.get_cookies()
+
     if qa_work and jobs:
         if not str(ctx.cfg("api_key") or "").strip():
             raise RuntimeError(
@@ -2718,17 +2869,15 @@ def main() -> None:
         ctx.cfg("task_mode", "combined") or "combined").strip().lower()
     if task_mode not in {"crawl", "combined"}:
         task_mode = "combined"
-    auto_enabled = bool(
-        ctx.cfg("auto_answer", False) or ctx.cfg("comment_reply", False))
-    if task_mode == "combined" and auto_enabled and not str(
-            ctx.cfg("api_key") or "").strip():
-        ctx.log("答题或评论回复已启用，但未配置模型 API Key，退出")
-        return
     headless = bool(ctx.cfg("headless", True))
 
     driver = make_driver(ctx, headless=headless)
     driver.set_page_load_timeout(60)
     try:
+        if task_mode == "combined":
+            run_combined(ctx, driver)
+            return
+
         bdata_courses: list[dict] = []
         spoc_ready = False
         try:
@@ -2743,46 +2892,33 @@ def main() -> None:
             ctx.log(f"SPOC 登录失败: {exc}")
         save_cookies(ctx, driver.get_cookies())
 
-        if task_mode == "crawl":
-            cache = load_task_cache(ctx)
-            bdata_ok = False
-            if bdata_courses:
-                try:
-                    cache = refresh_task_cache(
-                        ctx, driver, bdata_courses)
-                    bdata_ok = True
-                except (RuntimeError, WebDriverException) as exc:
-                    ctx.log(f"师道云课程缓存失败: {exc}")
-            if spoc_ready:
-                cache, spoc_count, spoc_failed = refresh_spoc_cache(
-                    ctx, driver)
-            else:
-                spoc_count, spoc_failed = 0, 1
-            if not bdata_ok and not spoc_ready:
-                raise RuntimeError("SPOC 和师道云课程详情均获取失败")
-            platform_courses = [
-                course for course in cache.get("courses", {}).values()
-                if isinstance(course, dict)
-            ]
-            bdata_count = sum(
-                1 for course in platform_courses
-                if course.get("platform") == "bdata")
-            spoc_count = sum(
-                1 for course in platform_courses
-                if course.get("platform") == "spoc")
-            task_count = sum(
-                len(course.get("tasks", []))
-                for course in platform_courses
-                if course.get("platform") == "bdata")
-            ctx.status(
-                f"课程详情已更新: 师道云 {bdata_count} 门/"
-                f"{task_count} 个任务，SPOC {spoc_count} 门课程，"
-                f"失败平台任务 {spoc_failed}",
-                done=True)
-            return
-        if not bdata_courses and not spoc_ready:
-            raise RuntimeError("SPOC 和师道云均未登录成功")
-        run_combined(ctx, driver)
+        cache = load_task_cache(ctx)
+        bdata_ok = False
+        if bdata_courses:
+            try:
+                cache = refresh_task_cache(
+                    ctx, driver, bdata_courses)
+                bdata_ok = True
+            except (RuntimeError, WebDriverException) as exc:
+                ctx.log(f"师道云课程缓存失败: {exc}")
+        if spoc_ready:
+            cache, _spoc_count, spoc_failed = refresh_spoc_cache(
+                ctx, driver)
+        else:
+            spoc_failed = 1
+        if not bdata_ok and not spoc_ready:
+            raise RuntimeError("SPOC 和师道云课程详情均获取失败")
+        bdata_count = len(cache.get("bdata", {}))
+        spoc_count = len(cache.get("spoc", []))
+        task_count = sum(
+            len(course.get("tasks", []))
+            for course in cache.get("bdata", {}).values()
+            if isinstance(course, dict))
+        ctx.status(
+            f"课程详情已更新: 师道云 {bdata_count} 门/"
+            f"{task_count} 个任务，SPOC {spoc_count} 门课程，"
+            f"失败平台任务 {spoc_failed}",
+            done=True)
     finally:
         try:
             driver.quit()

@@ -96,7 +96,7 @@ def online_status(session: requests.Session, portal: str,
     return False, error
 
 
-def authenticate(config: dict, log=None) -> dict:
+def authenticate(config: dict, log=None, force_login: bool = False) -> dict:
     username = str(config.get("username") or "").strip()
     password = str(config.get("password") or "")
     if not username or not password:
@@ -108,15 +108,17 @@ def authenticate(config: dict, log=None) -> dict:
     timeout = max(2.0, float(config.get("request_timeout") or 10))
     session = requests.Session()
     try:
-        online, detail = online_status(session, portal, timeout)
-        if online:
-            return {
-                "ok": True,
-                "already_online": True,
-                "portal": portal,
-                "connection": connection,
-                "message": "校园网已在线",
-            }
+        detail = ""
+        if not force_login:
+            online, detail = online_status(session, portal, timeout)
+            if online:
+                return {
+                    "ok": True,
+                    "already_online": True,
+                    "portal": portal,
+                    "connection": connection,
+                    "message": "校园网已在线",
+                }
 
         ip = local_ip(portal, config.get("ip"))
         callback = _callback()

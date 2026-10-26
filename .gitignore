@@ -16,6 +16,7 @@ legacy/
 /AGENTS.md
 /HANDOVER.md
 /PLAN.md
+/example.json
 
 # Local editor and operating-system files
 .idea/

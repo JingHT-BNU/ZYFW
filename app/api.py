@@ -25,7 +25,6 @@ global_config = GlobalConfig()
 runner = Runner()
 pm = PluginManager(runner)
 _BDATA_ID = "bdata-autoplay"
-_BDATA_TASK_CACHE_VERSION = 4
 _CAMPUS_AUTH_ID = "campus-network-auth"
 
 # ---------------- 窗口关闭自动退出 ----------------
@@ -321,28 +320,28 @@ def get_bdata_tasks(plugin_id: str):
     effective = _effective_plugin_config(plugin, cfg)
     account = str(effective.get("username") or "").strip()
     data = _read_json_object(_bdata_task_cache_path(plugin_id))
-    if not data or data.get("version") != _BDATA_TASK_CACHE_VERSION:
+    if not data or isinstance(data.get("version"), int):
         return {
-            "version": _BDATA_TASK_CACHE_VERSION,
             "account": account,
             "updated_at": "",
-            "courses": {},
+            "bdata": {},
+            "spoc": [],
         }
-    accounts = data.get("accounts")
-    entry = accounts.get(account) if isinstance(accounts, dict) else None
+    entry = data.get(account)
     if not isinstance(entry, dict):
         return {
-            "version": _BDATA_TASK_CACHE_VERSION,
             "account": account,
             "updated_at": "",
-            "courses": {},
+            "bdata": {},
+            "spoc": [],
         }
     return {
-        "version": _BDATA_TASK_CACHE_VERSION,
         "account": account,
         "updated_at": str(entry.get("updated_at") or ""),
-        "courses": entry.get("courses")
-        if isinstance(entry.get("courses"), dict) else {},
+        "bdata": entry.get("bdata")
+        if isinstance(entry.get("bdata"), dict) else {},
+        "spoc": entry.get("spoc")
+        if isinstance(entry.get("spoc"), list) else [],
     }
 
 
