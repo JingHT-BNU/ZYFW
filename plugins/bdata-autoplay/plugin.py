@@ -44,6 +44,7 @@ from llm import (  # noqa: E402
 LOGIN_HOME = "https://bdata.bnu.edu.cn/"
 COURSE_DATA_API = "/wechatapi/api/learn/getCourseData"
 COOKIE_LIFE_SECONDS = 7 * 86400
+TASK_CACHE_VERSION = 1
 
 TASK_BUTTON_XPATH = (
     '//*[@id="app"]/section/main/div/div[2]/div[2]/div/div/div[3]'
@@ -569,6 +570,161 @@ def collect_task_videos(driver) -> list[dict]:
                 title = normalize_title(item.get("title"))
                 videos[title] = {"title": title, "watched": ""}
     return list(videos.values())
+
+
+def task_cache_path(ctx: PluginContext) -> Path:
+    return Path(ctx.datadir) / "course_tasks.json"
+
+
+def load_task_cache(ctx: PluginContext) -> dict:
+    data = _read_json_object(task_cache_path(ctx))
+    if not data or data.get("version") != TASK_CACHE_VERSION:
+        return {"version": TASK_CACHE_VERSION, "updated_at": "", "courses": {}}
+    if not isinstance(data.get("courses"), dict):
+        data["courses"] = {}
+    return data
+
+
+def save_task_cache(ctx: PluginContext, data: dict) -> None:
+    _write_json_atomic(task_cache_path(ctx), data)
+
+
+def collect_course_menu_videos(driver) -> list[dict]:
+    deadline = time.time() + 8
+    videos: list[dict] = []
+    while time.time() < deadline:
+        videos = driver.execute_script(
+            """
+            const norm = s => String(s || '').replace(/\\s+/g, ' ').trim();
+            return Array.from(document.querySelectorAll('li.el-menu-item'))
+              .map(el => {
+                const path = el.querySelector('svg path');
+                return {
+                  title: norm(el.innerText),
+                  icon: path ? (path.getAttribute('d') || '') : '',
+                };
+              })
+              .filter(item => item.title &&
+                  item.icon.startsWith(arguments[0]));
+            """,
+            TASK_VIDEO_ICON_PREFIX,
+        )
+        videos = videos if isinstance(videos, list) else []
+        if videos:
+            break
+        time.sleep(0.3)
+    result: dict[str, dict] = {}
+    for video in videos:
+        title = normalize_title(video.get("title"))
+        if title:
+            result[title] = {"title": title, "outside_tasks": True}
+    return list(result.values())
+
+
+def _task_metric_counts(metrics: list[str]) -> dict[str, dict]:
+    counts: dict[str, dict] = {}
+    for raw in metrics:
+        match = re.match(r"^(.+?)(\d+)/(\d+)$", normalize_title(raw))
+        if not match:
+            continue
+        name, done, total = match.groups()
+        counts[name] = {"done": int(done), "total": int(total)}
+    return counts
+
+
+def _task_cache_group(cid: str, group: dict, index: int) -> dict:
+    header = normalize_title(group.get("header"))
+    metrics = [normalize_title(m) for m in group.get("metrics", [])]
+    first_metric = re.search(
+        r"(?:提交问卷|评论|回复|观看视频)\d+/\d+", header)
+    description = header[:first_metric.start()].strip(
+    ) if first_metric else header
+    number_match = re.search(r"任务\s*(\d+)", description)
+    number = int(number_match.group(1)) if number_match else index + 1
+    videos, tests, summaries, items_out = [], [], [], []
+    for item in group.get("items", []):
+        entry = {
+            "title": normalize_title(item.get("title")),
+            "tags": [normalize_title(tag) for tag in item.get("tags", [])],
+            "icon": str(item.get("icon") or ""),
+        }
+        icon = str(item.get("icon") or "")
+        items_out.append(entry)
+        if icon.startswith(TASK_VIDEO_ICON_PREFIX):
+            videos.append(entry)
+        elif icon.startswith(TASK_TEST_ICON_PREFIX):
+            tests.append(entry)
+        elif icon.startswith("M832 384H576V128"):
+            summaries.append(entry)
+    return {
+        "id": f"{cid}:task:{number}",
+        "number": number,
+        "name": f"任务{number}",
+        "description": description,
+        "metrics": metrics,
+        "requirements": _task_metric_counts(metrics),
+        "items": items_out,
+        "videos": videos,
+        "tests": tests,
+        "summaries": summaries,
+    }
+
+
+def cache_course_tasks(ctx: PluginContext, driver, course_url: str,
+                       cid: str) -> dict:
+    driver.get(course_url)
+    time.sleep(1.0)
+    data = course_data(driver, cid)
+    title = normalize_title(data.get("title")) or cid
+    groups = collect_task_groups(driver)
+    tasks = [
+        _task_cache_group(cid, group, index)
+        for index, group in enumerate(groups)
+    ]
+    task_video_titles = {
+        video["title"] for task in tasks for video in task["videos"]
+    }
+    menu_videos = collect_course_menu_videos(driver)
+    extra_videos = [
+        video for video in menu_videos
+        if video["title"] not in task_video_titles
+    ]
+    return {
+        "cid": cid,
+        "url": course_url,
+        "title": title,
+        "cached_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "tasks": tasks,
+        "extra_videos": extra_videos,
+    }
+
+
+def refresh_task_cache(ctx: PluginContext, driver,
+                       courses: list[tuple[str, str]]) -> dict:
+    cache = load_task_cache(ctx)
+    errors = 0
+    for index, (course_url, cid) in enumerate(courses, start=1):
+        ctx.progress(
+            stage="cache", done=index - 1, total=len(courses),
+            title=f"读取任务缓存: {cid}")
+        try:
+            course = cache_course_tasks(ctx, driver, course_url, cid)
+            cache["courses"][cid] = course
+            cache["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            save_task_cache(ctx, cache)
+            ctx.log(
+                f"已缓存课程 {course['title']}: "
+                f"{len(course['tasks'])} 个任务, "
+                f"{len(course['extra_videos'])} 个任务外视频")
+        except (RuntimeError, WebDriverException) as exc:
+            errors += 1
+            ctx.log(f"课程任务缓存失败({cid}): {exc}")
+    ctx.progress(
+        stage="cache", done=len(courses), total=len(courses),
+        title="任务缓存完成")
+    if errors == len(courses):
+        raise RuntimeError("全部课程任务缓存失败")
+    return cache
 
 
 def _wait_task_dialog_closed(driver, timeout: float = 1.8) -> bool:
@@ -1663,7 +1819,8 @@ def _metric_value(metrics: list[str], name: str) -> tuple[int, int]:
 
 def run_quiz_item(ctx: PluginContext, driver, broker: ReviewBroker,
                   course_title: str, test_title: str,
-                  model: tuple[str, str, str]) -> bool:
+                  model: tuple[str, str, str],
+                  full_auto: bool = False) -> bool:
     open_task_dialog(driver)
     click_task_entry(driver, test_title)
     fields = read_quiz_fields(
@@ -1683,8 +1840,12 @@ def run_quiz_item(ctx: PluginContext, driver, broker: ReviewBroker,
             "selected", "") if field["type"] == "single" else answer.get(
             "selected", []) if field["type"] == "multiple" else answer.get(
             "text", "")
-    ctx.log(f"模型已生成 {test_title} 的答案，等待用户核验")
-    response = broker.ask("quiz", f"测验：{test_title}", review_fields)
+    ctx.log(f"模型已生成 {test_title} 的答案")
+    if full_auto:
+        ctx.log(f"全自动模式：跳过人工核验并提交 {test_title}")
+        response = {"action": "approve", "payload": {"fields": []}}
+    else:
+        response = broker.ask("quiz", f"测验：{test_title}", review_fields)
     if not response or response.get("action") == "skip":
         ctx.log(f"用户跳过测验: {test_title}")
         return False
@@ -1699,7 +1860,8 @@ def run_quiz_item(ctx: PluginContext, driver, broker: ReviewBroker,
 
 def run_interaction_group(ctx: PluginContext, driver, broker: ReviewBroker,
                           course_url: str, course_title: str, group: dict,
-                          model: tuple[str, str, str]) -> bool:
+                          model: tuple[str, str, str],
+                          full_auto: bool = False) -> bool:
     videos = [
         item for item in group.get("items", [])
         if item.get("icon", "").startswith(TASK_VIDEO_ICON_PREFIX)
@@ -1740,9 +1902,13 @@ def run_interaction_group(ctx: PluginContext, driver, broker: ReviewBroker,
             "value": generated["reply"],
         })
     context = [f"参考评论 {i + 1}：{text}" for i, text in enumerate(sample)]
-    ctx.log(f"模型已生成 {video_title} 的互动内容，等待用户核验")
-    response = broker.ask(
-        "interaction", f"评论与回复：{video_title}", fields, context)
+    ctx.log(f"模型已生成 {video_title} 的互动内容")
+    if full_auto:
+        ctx.log(f"全自动模式：跳过人工核验并提交 {video_title} 的评论与回复")
+        response = {"action": "approve", "payload": {"fields": []}}
+    else:
+        response = broker.ask(
+            "interaction", f"评论与回复：{video_title}", fields, context)
     if not response or response.get("action") == "skip":
         ctx.log(f"用户跳过互动任务: {group.get('header')}")
         return False
@@ -1829,6 +1995,181 @@ def run_qa(ctx: PluginContext, driver,
         broker.clear()
 
 
+def build_combined_work(
+        cache: dict, courses: list[tuple[str, str]], plans: dict,
+        auto_answer: bool, comment_reply: bool) -> tuple[
+            list[dict], list[dict], list[dict]]:
+    if not isinstance(plans, dict):
+        plans = {}
+    video_jobs: dict[tuple[str, str], dict] = {}
+    quiz_items: list[dict] = []
+    interaction_items: list[dict] = []
+    for course_url, cid in courses:
+        course = cache["courses"].get(cid)
+        if not isinstance(course, dict):
+            continue
+        plan = plans.get(cid)
+        if not isinstance(plan, dict):
+            plan = {"enabled": True, "scope": "all", "task_ids": []}
+        if not plan.get("enabled", True):
+            continue
+        tasks = [
+            task for task in course.get("tasks", [])
+            if isinstance(task, dict)
+        ]
+        scope = str(plan.get("scope") or "all")
+        if scope == "selected":
+            selected_ids = {
+                str(task_id) for task_id in plan.get("task_ids", [])
+            }
+            tasks = [
+                task for task in tasks if task.get("id") in selected_ids
+            ]
+        course_title = normalize_title(course.get("title")) or cid
+        for task in tasks:
+            for video in task.get("videos", []):
+                title = normalize_title(video.get("title"))
+                video_jobs[(cid, title)] = {
+                    "title": title,
+                    "course_url": course_url,
+                    "cid": cid,
+                    "course_title": course_title,
+                }
+            if auto_answer:
+                for test in task.get("tests", []):
+                    if "已提交" in test.get("tags", []):
+                        continue
+                    quiz_items.append({
+                        "course_url": course_url,
+                        "course_title": course_title,
+                        "title": normalize_title(test.get("title")),
+                    })
+            if comment_reply and (
+                    task_group_has(task, "评论")
+                    or task_group_has(task, "回复")):
+                interaction_items.append({
+                    "course_url": course_url,
+                    "course_title": course_title,
+                    "group": task,
+                })
+        if scope == "all_extra":
+            for video in course.get("extra_videos", []):
+                title = normalize_title(video.get("title"))
+                video_jobs[(cid, title)] = {
+                    "title": title,
+                    "course_url": course_url,
+                    "cid": cid,
+                    "course_title": course_title,
+                }
+    return list(video_jobs.values()), quiz_items, interaction_items
+
+
+def run_combined(ctx: PluginContext, driver,
+                 courses: list[tuple[str, str]]) -> None:
+    cache = load_task_cache(ctx)
+    if not cache.get("courses"):
+        raise RuntimeError(
+            "尚未生成课程任务缓存，请先在插件配置中点击“刷新课程任务缓存”")
+    auto_answer = bool(ctx.cfg("auto_answer", False))
+    comment_reply = bool(ctx.cfg("comment_reply", False))
+    full_auto = bool(ctx.cfg("full_auto", False)) and (
+        auto_answer or comment_reply)
+    jobs, quiz_items, interaction_items = build_combined_work(
+        cache,
+        courses,
+        ctx.cfg("course_plans", {}),
+        auto_answer,
+        comment_reply,
+    )
+    total_work = len(jobs) + len(quiz_items) + len(interaction_items)
+    if not total_work:
+        ctx.progress(done=0, total=0)
+        ctx.status("所选范围内没有需要处理的内容", done=True)
+        return
+    ctx.log(
+        f"合并任务开始: 视频 {len(jobs)}, 测验 {len(quiz_items)}, "
+        f"评论回复 {len(interaction_items)}, 总计 {total_work}")
+    if full_auto:
+        ctx.log("警告: 全自动模式已启用，答题和互动内容将不经人工核验直接提交")
+
+    done = 0
+    skipped = 0
+    if jobs:
+        workers = min(max(1, positive_int(ctx.cfg("workers", 2), 2)), len(jobs))
+        ctx.log(f"开始播放任务范围内视频: {len(jobs)} 个, {workers} 并发")
+        tracker = run_parallel(
+            ctx,
+            jobs,
+            driver.get_cookies(),
+            None,
+            bounded_float(ctx.cfg("speedup", 3), 3.0, 1.0, 3.0),
+            bounded_float(
+                ctx.cfg("completion_tolerance", 3), 3.0, 0.0, 30.0),
+            bool(ctx.cfg("only_unfinished", True)),
+            workers,
+        )
+        done = sum(
+            1 for status in tracker.results.values() if status == "已完成")
+        skipped += len(jobs) - done
+
+    model = None
+    broker = None
+    if quiz_items or interaction_items:
+        api_url = str(
+            ctx.cfg("api_url", "https://api.deepseek.com")
+            or "https://api.deepseek.com").strip()
+        api_key = str(ctx.cfg("api_key") or "").strip()
+        model_id = str(
+            ctx.cfg("model_id", "deepseek-flash")
+            or "deepseek-flash").strip()
+        if not api_key:
+            raise RuntimeError("答题或评论回复已启用，但未配置模型 API Key")
+        model = (api_url, api_key, model_id)
+        broker = ReviewBroker(ctx)
+        broker.clear()
+
+    try:
+        for item in quiz_items:
+            ctx.progress(
+                done=done, total=total_work, course=item["course_title"],
+                title=item["title"])
+            driver.get(item["course_url"])
+            try:
+                if run_quiz_item(
+                        ctx, driver, broker, item["course_title"],
+                        item["title"], model, full_auto=full_auto):
+                    done += 1
+                else:
+                    skipped += 1
+            except (LLMError, RuntimeError, WebDriverException) as exc:
+                skipped += 1
+                ctx.log(f"测验失败: {item['title']}: {exc}")
+        for item in interaction_items:
+            group = item["group"]
+            ctx.progress(
+                done=done, total=total_work, course=item["course_title"],
+                title=normalize_title(group.get("description")))
+            try:
+                if run_interaction_group(
+                        ctx, driver, broker, item["course_url"],
+                        item["course_title"], group, model,
+                        full_auto=full_auto):
+                    done += 1
+                else:
+                    skipped += 1
+            except (LLMError, RuntimeError, WebDriverException) as exc:
+                skipped += 1
+                ctx.log(
+                    f"评论回复失败: {group.get('description', '')}: {exc}")
+    finally:
+        if broker:
+            broker.clear()
+    ctx.progress(done=done, total=total_work)
+    ctx.status(
+        f"合并任务结束: 完成 {done}/{total_work}，跳过或失败 {skipped}",
+        done=True)
+
+
 def main() -> None:
     ctx = PluginContext()
     raw_urls = ctx.cfg("course_urls") or []
@@ -1851,16 +2192,16 @@ def main() -> None:
         ctx.log("未配置统一认证账号(需在全局设置或插件配置中填写),退出")
         return
 
-    task_mode = str(ctx.cfg("task_mode", "study") or "study").strip().lower()
-    if task_mode not in {"study", "qa"}:
-        task_mode = "study"
-    if task_mode == "qa" and not str(ctx.cfg("api_key") or "").strip():
-        ctx.log("答题与互动模式需要先在插件配置中填写模型 API Key,退出")
+    task_mode = str(
+        ctx.cfg("task_mode", "combined") or "combined").strip().lower()
+    if task_mode not in {"crawl", "combined"}:
+        task_mode = "combined"
+    auto_enabled = bool(
+        ctx.cfg("auto_answer", False) or ctx.cfg("comment_reply", False))
+    if task_mode == "combined" and auto_enabled and not str(
+            ctx.cfg("api_key") or "").strip():
+        ctx.log("答题或评论回复已启用，但未配置模型 API Key，退出")
         return
-    speedup = bounded_float(ctx.cfg("speedup", 3), 3.0, 1.0, 3.0)
-    tolerance = bounded_float(ctx.cfg("completion_tolerance", 3), 3.0, 0.0, 30.0)
-    worker_count = positive_int(ctx.cfg("workers", 2), 2)
-    only_unfinished = bool(ctx.cfg("only_unfinished", True))
     headless = bool(ctx.cfg("headless", True))
 
     driver = make_driver(ctx, headless=headless)
@@ -1868,28 +2209,12 @@ def main() -> None:
     try:
         first_url, first_cid = courses[0]
         ensure_authenticated(ctx, driver, first_url, first_cid)
-        if task_mode == "qa":
-            ctx.log("开始答题与互动任务")
-            run_qa(ctx, driver, courses)
+        if task_mode == "crawl":
+            ctx.log("开始刷新课程任务缓存")
+            refresh_task_cache(ctx, driver, courses)
+            ctx.status("课程任务缓存已更新", done=True)
             return
-        jobs = discover_course_jobs(ctx, driver, courses)
-        if not jobs:
-            ctx.progress(done=0, total=0)
-            ctx.status("任务中没有需要播放的必修视频", done=True)
-            return
-        cookies = driver.get_cookies()
-        workers = min(worker_count, len(jobs))
-        ctx.log(f"开始并发刷课: {workers} 个浏览器进程, {len(jobs)} 个视频")
-        tracker = run_parallel(
-            ctx, jobs, cookies, driver, speedup, tolerance,
-            only_unfinished, workers)
-        snapshot = tracker.snapshot()
-        completed = sum(
-            1 for status in tracker.results.values() if status == "已完成")
-        ctx.status(
-            f"师道云刷课处理结束: "
-            f"{completed}/{snapshot['total']} 个视频",
-            done=True)
+        run_combined(ctx, driver, courses)
     finally:
         try:
             driver.quit()

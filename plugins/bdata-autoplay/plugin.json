@@ -1,24 +1,41 @@
 {
   "id": "bdata-autoplay",
   "name": "师道云刷课",
-  "version": "2.1.3",
-  "description": "支持师道云刷课与答题互动：可并行播放必修视频，也可调用兼容 OpenAI Chat 接口的模型生成测验答案、课程评论和回复，并在用户确认后提交；课程量表可按固定策略或正态分布自动选择。",
+  "version": "3.0.0",
+  "description": "将师道云刷课、测验、评论和回复合并为单一任务；支持课程任务缓存、按课程与任务范围执行、自动答题/互动以及需要每次启动确认的全自动模式。",
   "entry": "plugin.py",
   "config_ui": "ui.html",
   "config_schema": [
-    {
-      "key": "task_mode",
-      "label": "任务类型",
-      "type": "choice",
-      "default": "study",
-      "choices": ["study", "qa"],
-      "choice_labels": ["刷课", "答题与互动"]
-    },
     {
       "key": "course_urls",
       "label": "课程链接",
       "type": "string-list",
       "hint": "一行一个师道云课程 URL，例如 https://bdata.bnu.edu.cn/course?cid=..."
+    },
+    {
+      "key": "course_plans",
+      "label": "课程与任务范围",
+      "type": "object",
+      "default": {}
+    },
+    {
+      "key": "auto_answer",
+      "label": "自动答题",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "comment_reply",
+      "label": "评论回复",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "full_auto",
+      "label": "全自动模式",
+      "type": "bool",
+      "default": false,
+      "hint": "跳过人工核验；每次启动前都会弹窗警告并要求确认"
     },
     {
       "key": "only_unfinished",

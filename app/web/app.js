@@ -68,6 +68,7 @@
     const stageNames = {
       catalog: "专业目录抓取",
       courses: "课程列表读取",
+      cache: "课程任务缓存",
       grab: "抢课轮询",
       qa: "答题与互动",
       study: "视频学习",
@@ -412,6 +413,30 @@
 
       async function startPlugin(id) {
         try {
+          if (id === "bdata-autoplay") {
+            const data = await api("/plugins/" + id + "/config");
+            const cfg = data.config || {};
+            const fullAuto = cfg.full_auto === true
+              && (cfg.auto_answer === true || cfg.comment_reply === true);
+            if (fullAuto) {
+              try {
+                await El.ElMessageBox.confirm(
+                  "当前已开启全自动模式。模型生成的测验答案、课程评论和回复将不再经过人工核验，确认后可能直接提交到课程平台。请确认你已检查模型、提示词和操作范围。",
+                  "危险：全自动提交",
+                  {
+                    type: "warning",
+                    confirmButtonText: "我已了解，继续启动",
+                    cancelButtonText: "取消启动",
+                    closeOnClickModal: false,
+                    closeOnPressEscape: false,
+                  }
+                );
+              } catch (e) {
+                El.ElMessage.info("已取消启动");
+                return;
+              }
+            }
+          }
           await post("/plugins/" + id + "/start");
           El.ElMessage.success("已启动");
           await refresh();
@@ -599,6 +624,19 @@
             headers: { "Content-Type": "application/json" },
             body: body === undefined ? undefined : JSON.stringify(body),
           }),
+          confirm: async (message, title, options) => {
+            try {
+              await El.ElMessageBox.confirm(message, title || "请确认", {
+                type: "warning",
+                confirmButtonText: "确认",
+                cancelButtonText: "取消",
+                ...(options || {}),
+              });
+              return true;
+            } catch (e) {
+              return false;
+            }
+          },
           message: (type, text) => {
             const m = El.ElMessage;
             (m[type] || m.info).call(m, text);

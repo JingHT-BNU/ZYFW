@@ -1,20 +1,26 @@
 <div class="zy-config" id="bdata-ui">
   <div class="zy-alert zy-warn">
-    答题与互动模式会调用你配置的大模型接口。模型生成内容只会暂存到本机，
-    必须在下方核验并点击“确认并提交”后，插件才会继续操作网页。
+    刷课、测验和评论回复已合并为一个任务。默认情况下，模型生成内容必须人工核验；
+    开启全自动模式后将跳过核验并直接提交，每次启动都会再次弹窗警告。
     请填写支持 OpenAI Chat Completions 与工具调用（function/tool calling）的服务地址。
   </div>
 
   <div class="zy-row">
-    <div class="zy-field">
-      <label>任务类型</label>
-      <select id="bdata-mode">
-        <option value="study">刷课</option>
-        <option value="qa">答题与互动</option>
-      </select>
-    </div>
     <button class="zy-btn zy-primary" id="bdata-save">保存配置</button>
-    <span class="zy-hint">保存后重新启动插件才会切换任务。</span>
+    <span class="zy-hint">保存后启动插件，按所选课程与任务范围执行。</span>
+  </div>
+
+  <div class="zy-alert">
+    <div class="zy-row">
+      <button class="zy-btn zy-primary" id="bdata-refresh-tasks">刷新课程任务缓存</button>
+      <span class="zy-hint" id="bdata-cache-meta">尚未读取任务缓存</span>
+    </div>
+    <div class="zy-hint">
+      缓存包含每门课程的任务、视频、测试、评论回复要求和任务外视频，以课程 URL 中的 cid 区分。
+    </div>
+    <div id="bdata-course-plans" class="bdata-course-plans">
+      <div class="zy-hint">正在读取任务缓存…</div>
+    </div>
   </div>
 
   <div class="zy-row">
@@ -61,6 +67,23 @@
         </label>
       </div>
     </div>
+  </div>
+
+  <div class="zy-row">
+    <div class="zy-field">
+      <label>自动化能力</label>
+      <label class="zy-hint"><input type="checkbox" id="bdata-auto-answer"> 自动答题</label>
+      <label class="zy-hint"><input type="checkbox" id="bdata-comment-reply"> 评论回复</label>
+    </div>
+    <div class="zy-field">
+      <label>提交方式</label>
+      <label class="zy-hint">
+        <input type="checkbox" id="bdata-full-auto" disabled> 全自动模式（跳过人工核验）
+      </label>
+    </div>
+  </div>
+  <div class="zy-alert zy-error" id="bdata-full-auto-warning" hidden>
+    危险：全自动模式会把模型生成的测验答案、评论和回复直接提交。每次启动任务前仍会强制弹窗确认。
   </div>
 
   <div id="bdata-qa-settings">
@@ -115,7 +138,7 @@
       约 3 倍标准差映射为“非常同意/非常不同意”；每题独立随机选择。
     </div>
     <div class="zy-hint">
-      模型使用工具调用返回单选、多选和简答答案；简答题约 200 字。
+      启用“自动答题”或“评论回复”后需要模型配置。模型使用工具调用返回答案；
       量表题由所选策略自动填写，不会出现在答案核验区，也不需要逐题确认。
     </div>
   </div>
@@ -144,6 +167,8 @@
   var requestId = "";
   var currentFields = [];
   var sending = false;
+  var taskCache = null;
+  var cacheTimer = null;
 
   function showMsg(text, cls) {
     var el = $("bdata-msg");
@@ -159,10 +184,32 @@
     }).filter(Boolean);
   }
 
+  function collectCoursePlans() {
+    var plans = {};
+    document.querySelectorAll(".bdata-course-plan").forEach(function (card) {
+      var cid = card.getAttribute("data-cid");
+      if (!cid) return;
+      var enabled = card.querySelector(".bdata-course-enabled");
+      var scope = card.querySelector(".bdata-course-scope");
+      var checkedTasks = Array.from(
+        card.querySelectorAll(".bdata-task-check:checked")
+      ).map(function (input) { return input.value; });
+      plans[cid] = {
+        enabled: !!(enabled && enabled.checked),
+        scope: scope ? scope.value : "all",
+        task_ids: checkedTasks
+      };
+    });
+    return plans;
+  }
+
   function collectConfig() {
     return {
-      task_mode: $("bdata-mode").value,
       course_urls: splitCourses($("bdata-courses").value),
+      course_plans: collectCoursePlans(),
+      auto_answer: $("bdata-auto-answer").checked,
+      comment_reply: $("bdata-comment-reply").checked,
+      full_auto: $("bdata-full-auto").checked,
       only_unfinished: $("bdata-unfinished").checked,
       workers: Math.max(1, Number($("bdata-workers").value) || 1),
       speedup: Math.min(3, Math.max(1, Number($("bdata-speedup").value) || 3)),
@@ -179,10 +226,26 @@
     };
   }
 
-  function syncMode() {
-    var qa = $("bdata-mode").value === "qa";
-    $("bdata-study-settings").hidden = qa;
-    $("bdata-qa-settings").hidden = !qa;
+  function syncAutomation() {
+    var enabled = $("bdata-auto-answer").checked
+      || $("bdata-comment-reply").checked;
+    $("bdata-full-auto").disabled = !enabled;
+    if (!enabled) $("bdata-full-auto").checked = false;
+    $("bdata-full-auto-warning").hidden = !$("bdata-full-auto").checked;
+  }
+
+  function confirmFullAuto() {
+    return Z.confirm(
+      "危险：全自动模式会跳过人工核验，直接提交模型生成的测验答案、评论和回复。"
+      + "每次启动插件前还会再次警告。确认启用全自动模式吗？",
+      "危险：全自动提交",
+      {
+        confirmButtonText: "我已了解，启用",
+        cancelButtonText: "取消",
+        closeOnClickModal: false,
+        closeOnPressEscape: false
+      }
+    );
   }
 
   function syncSurveyStrategy() {
@@ -194,11 +257,233 @@
 
   async function save() {
     try {
-      await Z.saveConfig(collectConfig());
+      var cfg = collectConfig();
+      var selectedCourses = Object.keys(cfg.course_plans).filter(function (cid) {
+        var plan = cfg.course_plans[cid];
+        if (!plan.enabled) return false;
+        if (plan.scope === "selected" && !plan.task_ids.length) {
+          throw new Error("存在已启用但未勾选具体任务的课程");
+        }
+        return true;
+      });
+      if (!selectedCourses.length) {
+        throw new Error("请至少启用一门课程并选择任务范围");
+      }
+      if ((cfg.auto_answer || cfg.comment_reply) && !cfg.api_key.trim()) {
+        throw new Error("启用自动答题或评论回复前，请填写模型 API Key");
+      }
+      if (cfg.full_auto && !(await confirmFullAuto())) {
+        $("bdata-full-auto").checked = false;
+        syncAutomation();
+        return;
+      }
+      await Z.saveConfig(cfg);
       Z.message("success", "配置已保存；重新启动插件后生效");
-      showMsg("配置已保存。答题模式会先暂停等待你核验，不会直接提交。", "zy-warn");
+      showMsg(cfg.full_auto
+        ? "配置已保存。全自动模式将在每次启动前再次要求危险确认。"
+        : "配置已保存。模型生成内容会先暂停等待你核验。", "zy-warn");
     } catch (e) {
       Z.message("error", "保存失败: " + e.message);
+    }
+  }
+
+  function courseCid(url) {
+    var match = String(url || "").match(/[?&]cid=([^&#]+)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  function taskSummary(task) {
+    var pieces = [];
+    if ((task.videos || []).length) {
+      pieces.push("视频 " + task.videos.length);
+    }
+    if ((task.tests || []).length) {
+      pieces.push("测试 " + task.tests.length);
+    }
+    var requirements = task.requirements || {};
+    if (requirements["评论"]) pieces.push("评论");
+    if (requirements["回复"]) pieces.push("回复");
+    return pieces.join(" · ") || "无内容";
+  }
+
+  function makeTaskPlan(courseUrl, course, plan) {
+    plan = plan && typeof plan === "object" ? plan : {};
+    var card = document.createElement("div");
+    card.className = "bdata-course-plan";
+    card.setAttribute("data-cid", course ? course.cid : courseCid(courseUrl));
+
+    var head = document.createElement("div");
+    head.className = "zy-row bdata-plan-head";
+    var enabledLabel = document.createElement("label");
+    enabledLabel.className = "bdata-plan-title";
+    var enabled = document.createElement("input");
+    enabled.type = "checkbox";
+    enabled.className = "bdata-course-enabled";
+    enabled.checked = plan.enabled !== false;
+    enabledLabel.appendChild(enabled);
+    var title = document.createElement("strong");
+    title.textContent = course ? course.title : "课程缓存缺失";
+    enabledLabel.appendChild(title);
+    head.appendChild(enabledLabel);
+
+    if (course) {
+      var meta = document.createElement("span");
+      meta.className = "zy-hint";
+      meta.textContent = course.cid + " · " + (course.tasks || []).length
+        + " 个任务 · " + (course.extra_videos || []).length + " 个任务外视频";
+      head.appendChild(meta);
+
+      var scope = document.createElement("select");
+      scope.className = "bdata-course-scope";
+      [
+        ["selected", "刷指定任务"],
+        ["all", "刷全部任务"],
+        ["all_extra", "全部任务 + 任务外视频"],
+      ].forEach(function (entry) {
+        var option = document.createElement("option");
+        option.value = entry[0];
+        option.textContent = entry[1];
+        option.selected = (plan.scope || "all") === entry[0];
+        scope.appendChild(option);
+      });
+      head.appendChild(scope);
+      card.appendChild(head);
+
+      var taskList = document.createElement("div");
+      taskList.className = "bdata-task-list";
+      var selectedIds = Array.isArray(plan.task_ids)
+        ? plan.task_ids.map(String) : [];
+      (course.tasks || []).forEach(function (task) {
+        var item = document.createElement("label");
+        item.className = "bdata-task-option";
+        var checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.className = "bdata-task-check";
+        checkbox.value = task.id;
+        checkbox.checked = selectedIds.indexOf(String(task.id)) >= 0;
+        item.appendChild(checkbox);
+        var text = document.createElement("span");
+        text.textContent = (task.name || "任务") + " · "
+          + taskSummary(task);
+        text.title = task.description || "";
+        item.appendChild(text);
+        taskList.appendChild(item);
+      });
+      card.appendChild(taskList);
+      taskList.hidden = scope.value !== "selected";
+      scope.addEventListener("change", function () {
+        taskList.hidden = scope.value !== "selected";
+      });
+      enabled.addEventListener("change", function () {
+        card.classList.toggle("is-disabled", !enabled.checked);
+      });
+      card.classList.toggle("is-disabled", !enabled.checked);
+    } else {
+      var missing = document.createElement("span");
+      missing.className = "zy-hint";
+      missing.textContent = "请刷新课程任务缓存后再选择任务";
+      head.appendChild(missing);
+      card.appendChild(head);
+    }
+    return card;
+  }
+
+  function renderTaskCache(data, configuredPlans) {
+    taskCache = data || null;
+    var root = $("bdata-course-plans");
+    var currentPlans = document.querySelector(".bdata-course-plan")
+      ? collectCoursePlans() : {};
+    root.textContent = "";
+    var urls = splitCourses($("bdata-courses").value);
+    var plans = Object.assign({}, configuredPlans || {});
+    Object.assign(plans, currentPlans);
+    var courses = (data && data.courses) || {};
+    if (!urls.length) {
+      var empty = document.createElement("div");
+      empty.className = "zy-hint";
+      empty.textContent = "请先填写课程链接，再刷新任务缓存。";
+      root.appendChild(empty);
+      return;
+    }
+    urls.forEach(function (url) {
+      var cid = courseCid(url);
+      if (!cid) return;
+      root.appendChild(makeTaskPlan(url, courses[cid], plans[cid]));
+    });
+    $("bdata-cache-meta").textContent = data && data.updated_at
+      ? "缓存更新于 " + data.updated_at + " · " + Object.keys(courses).length + " 门课程"
+      : "尚未生成任务缓存";
+  }
+
+  async function loadTaskCache(configuredPlans) {
+    try {
+      var data = await Z.api("plugins/bdata-autoplay/tasks");
+      renderTaskCache(data, configuredPlans);
+      return data;
+    } catch (e) {
+      renderTaskCache(null, configuredPlans);
+      return null;
+    }
+  }
+
+  function stopCacheWatch() {
+    if (cacheTimer) {
+      clearInterval(cacheTimer);
+      cacheTimer = null;
+    }
+  }
+
+  function watchCacheRefresh(configuredPlans) {
+    stopCacheWatch();
+    var button = $("bdata-refresh-tasks");
+    var meta = $("bdata-cache-meta");
+    var everRunning = false;
+    button.disabled = true;
+    cacheTimer = setInterval(async function () {
+      if (!document.getElementById("bdata-refresh-tasks")) {
+        stopCacheWatch();
+        return;
+      }
+      try {
+        var plugins = await Z.api("plugins");
+        var plugin = (plugins.plugins || []).find(function (item) {
+          return item.id === "bdata-autoplay";
+        });
+        var running = !!(plugin && plugin.running);
+        if (running) {
+          everRunning = true;
+          var progress = plugin.progress || {};
+          meta.textContent = progress.title
+            ? "正在刷新任务缓存 · " + progress.title
+            : "正在登录并刷新任务缓存…";
+          return;
+        }
+        if (everRunning) {
+          stopCacheWatch();
+          button.disabled = false;
+          await loadTaskCache(configuredPlans);
+          Z.message("success", "课程任务缓存已刷新");
+        }
+      } catch (e) {
+        /* 下一轮继续 */
+      }
+    }, 2000);
+  }
+
+  async function refreshTaskCache() {
+    var button = $("bdata-refresh-tasks");
+    var meta = $("bdata-cache-meta");
+    button.disabled = true;
+    meta.textContent = "正在保存课程设置并启动缓存任务…";
+    try {
+      var cfg = collectConfig();
+      await Z.saveConfig(cfg);
+      await Z.post("plugins/bdata-autoplay/tasks/refresh");
+      watchCacheRefresh(cfg.course_plans || {});
+    } catch (e) {
+      button.disabled = false;
+      meta.textContent = "刷新失败：" + e.message;
+      Z.message("error", e.message);
     }
   }
 
@@ -360,8 +645,10 @@
 
   (async function init() {
     var cfg = await Z.getConfig();
-    $("bdata-mode").value = cfg.task_mode === "qa" ? "qa" : "study";
     $("bdata-courses").value = (cfg.course_urls || []).join("\n");
+    $("bdata-auto-answer").checked = cfg.auto_answer === true;
+    $("bdata-comment-reply").checked = cfg.comment_reply === true;
+    $("bdata-full-auto").checked = cfg.full_auto === true;
     $("bdata-unfinished").checked = cfg.only_unfinished !== false;
     $("bdata-workers").value = cfg.workers || 2;
     $("bdata-speedup").value = Math.min(3, cfg.speedup || 3);
@@ -380,15 +667,36 @@
       cfg.survey_positive_value != null ? String(cfg.survey_positive_value) : "3";
     $("bdata-survey-negative").value =
       cfg.survey_negative_value != null ? String(cfg.survey_negative_value) : "1";
-    $("bdata-mode").addEventListener("change", syncMode);
+    $("bdata-auto-answer").addEventListener("change", syncAutomation);
+    $("bdata-comment-reply").addEventListener("change", syncAutomation);
+    $("bdata-full-auto").addEventListener("change", async function () {
+      if ($("bdata-full-auto").checked && !(await confirmFullAuto())) {
+        $("bdata-full-auto").checked = false;
+      }
+      syncAutomation();
+    });
     $("bdata-survey-strategy").addEventListener("change", syncSurveyStrategy);
     $("bdata-save").addEventListener("click", save);
+    $("bdata-refresh-tasks").addEventListener("click", refreshTaskCache);
     $("bdata-approve").addEventListener("click", function () { decide("approve"); });
     $("bdata-skip").addEventListener("click", function () { decide("skip"); });
-    syncMode();
+    syncAutomation();
     syncSurveyStrategy();
+    await loadTaskCache(cfg.course_plans || {});
     await pollReview();
     setInterval(pollReview, 2000);
+    try {
+      var plugins = await Z.api("plugins");
+      var plugin = (plugins.plugins || []).find(function (item) {
+        return item.id === "bdata-autoplay";
+      });
+      if (plugin && plugin.running
+          && plugin.progress && plugin.progress.stage === "cache") {
+        watchCacheRefresh(cfg.course_plans || {});
+      }
+    } catch (e) {
+      /* 忽略启动时状态读取失败 */
+    }
   })().catch(function (e) {
     showMsg("配置界面初始化失败: " + e.message, "zy-error");
   });

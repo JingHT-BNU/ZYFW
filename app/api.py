@@ -276,12 +276,56 @@ def _review_paths(plugin_id: str) -> tuple[Path, Path]:
     return data_dir / "review_request.json", data_dir / "review_response.json"
 
 
+def _bdata_task_cache_path(plugin_id: str) -> Path:
+    if plugin_id != _BDATA_ID:
+        raise HTTPException(404, f"插件不存在: {plugin_id}")
+    return pm.plugin_data_dir(plugin_id) / "course_tasks.json"
+
+
 def _read_json_object(path: Path) -> dict | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
+
+
+@api_router.get("/plugins/{plugin_id}/tasks")
+def get_bdata_tasks(plugin_id: str):
+    data = _read_json_object(_bdata_task_cache_path(plugin_id))
+    if not data:
+        return {"version": 1, "updated_at": "", "courses": {}}
+    return data
+
+
+@api_router.post("/plugins/{plugin_id}/tasks/refresh")
+def refresh_bdata_tasks(plugin_id: str):
+    if plugin_id != _BDATA_ID:
+        raise HTTPException(404, f"插件不存在: {plugin_id}")
+    try:
+        plugin = pm.get_plugin(plugin_id)
+    except PluginError as e:
+        raise HTTPException(404, str(e)) from e
+    if runner.is_running(plugin_id):
+        raise HTTPException(409, "插件已在运行")
+    cfg = PluginConfigStore(plugin_id).get()
+    effective = _effective_plugin_config(plugin, cfg)
+    effective["task_mode"] = "crawl"
+    for path in _review_paths(plugin_id):
+        path.unlink(missing_ok=True)
+    data_dir = pm.plugin_data_dir(plugin_id)
+    plugin_dir = Path(plugin["dir"]).resolve()
+    entry = (plugin_dir / plugin["entry"]).resolve()
+    if not entry.is_relative_to(plugin_dir):
+        raise HTTPException(400, "插件入口文件不在插件目录内")
+    try:
+        runner.start(
+            plugin_id, entry, effective, data_dir,
+            env_extra={"PYTHONPATH": str(PLUGINS_DIR)},
+        )
+    except RuntimeError as e:
+        raise HTTPException(409, str(e)) from e
+    return {"ok": True}
 
 
 @api_router.get("/plugins/{plugin_id}/review")

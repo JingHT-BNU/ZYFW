@@ -351,6 +351,45 @@ html, body, #app {
   color: var(--zyfw-text-secondary);
   line-height: 1.5;
 }
+.bdata-course-plans {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+.bdata-course-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--zyfw-border);
+  border-radius: 8px;
+  background: var(--zyfw-card);
+}
+.bdata-course-plan.is-disabled { opacity: 0.58; }
+.bdata-plan-head { justify-content: space-between; }
+.bdata-plan-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 240px;
+  flex: 1 1 420px;
+}
+.bdata-task-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 6px 14px;
+  padding-top: 7px;
+  border-top: 1px dashed var(--zyfw-border);
+}
+.bdata-task-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.bdata-task-option input { margin-top: 3px; }
 .zy-btn {
   height: 32px;
   padding: 0 16px;

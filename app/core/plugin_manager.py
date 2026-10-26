@@ -16,7 +16,10 @@ ALLOWED_ENTRY = {"plugin.py"}
 MAX_ZIP_MEMBERS = 500
 MAX_ZIP_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 
-VALID_TYPES = {"string", "password", "number", "bool", "choice", "string-list", "course-table", "specialty"}
+VALID_TYPES = {
+    "string", "password", "number", "bool", "choice", "string-list",
+    "course-table", "specialty", "object",
+}
 BUILTIN_IDS = {"course-grab", "spoc-autoplay", "bdata-autoplay"}
 
 
