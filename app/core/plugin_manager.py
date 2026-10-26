@@ -20,7 +20,7 @@ VALID_TYPES = {
     "string", "password", "number", "bool", "choice", "string-list",
     "course-table", "specialty", "object",
 }
-BUILTIN_IDS = {"course-grab", "bdata-autoplay"}
+BUILTIN_IDS = {"course-grab", "bdata-autoplay", "campus-network-auth"}
 
 
 class PluginError(Exception):

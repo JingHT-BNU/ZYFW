@@ -9,6 +9,9 @@ data/
 # Archived scripts and captured browser state may contain plaintext secrets
 legacy/
 
+# Upstream campus-network utility; migrated into the network-auth plugin
+/srun_auth/
+
 # Local collaboration and planning documents
 /AGENTS.md
 /HANDOVER.md

@@ -5,6 +5,8 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import uuid
@@ -24,6 +26,7 @@ runner = Runner()
 pm = PluginManager(runner)
 _BDATA_ID = "bdata-autoplay"
 _BDATA_TASK_CACHE_VERSION = 4
+_CAMPUS_AUTH_ID = "campus-network-auth"
 
 # ---------------- 窗口关闭自动退出 ----------------
 # 页面通过 WebSocket 保持连接;所有客户端断开且宽限期内无人重连(如页面刷新)时,
@@ -80,6 +83,7 @@ def _effective_plugin_config(plugin: dict, cfg: dict) -> dict:
 
     合并结果同时写入 account 与顶层 username/password(插件运行时读取后者)。
     BNU刷课固定使用全局账号,忽略旧版插件内保存的凭据。
+    校园网认证与统一身份认证无关,只使用插件自己的账号密码。
     注意必须直接赋值而非 setdefault: 配置界面保存的 username/password 键总是
     存在(留空=用全局, 存的是空串), setdefault 遇到空串占位不会覆盖,
     会导致全局账号永远合并不进去。
@@ -98,10 +102,17 @@ def _effective_plugin_config(plugin: dict, cfg: dict) -> dict:
     gsrc = g.get("account")
     if not isinstance(gsrc, dict):
         gsrc = {}
-    merged = {
-        "username": plugin_username or gsrc.get("username") or "",
-        "password": plugin_password or gsrc.get("password") or "",
-    }
+    if plugin.get("id") == _CAMPUS_AUTH_ID:
+        # Campus-network credentials are intentionally separate from BNU CAS.
+        merged = {
+            "username": plugin_username,
+            "password": plugin_password,
+        }
+    else:
+        merged = {
+            "username": plugin_username or gsrc.get("username") or "",
+            "password": plugin_password or gsrc.get("password") or "",
+        }
     effective["account"] = merged
     effective["username"] = merged["username"]
     effective["password"] = merged["password"]
@@ -365,6 +376,66 @@ def refresh_bdata_tasks(plugin_id: str):
     except RuntimeError as e:
         raise HTTPException(409, str(e)) from e
     return {"ok": True}
+
+
+def _campus_autostart_script(plugin_id: str) -> Path:
+    if plugin_id != _CAMPUS_AUTH_ID:
+        raise HTTPException(404, f"插件不存在: {plugin_id}")
+    try:
+        plugin = pm.get_plugin(plugin_id)
+    except PluginError as e:
+        raise HTTPException(404, str(e)) from e
+    plugin_dir = Path(plugin["dir"]).resolve()
+    script = (plugin_dir / "autostart.py").resolve()
+    if not script.is_relative_to(plugin_dir) or not script.is_file():
+        raise HTTPException(404, "校园网认证自启脚本不存在")
+    return script
+
+
+def _run_campus_autostart(script: Path, action: str) -> dict:
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), action],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(500, f"执行开机自启配置失败: {exc}") from exc
+    output = (result.stdout or result.stderr or "").strip()
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            500, f"开机自启脚本返回异常: {output[:300]}") from exc
+    if result.returncode != 0 and not isinstance(payload.get("status"), dict):
+        raise HTTPException(
+            500, str(payload.get("error") or "开机自启配置失败"))
+    return payload
+
+
+@api_router.get("/plugins/{plugin_id}/autostart")
+def get_campus_autostart(plugin_id: str):
+    script = _campus_autostart_script(plugin_id)
+    return _run_campus_autostart(script, "--status")
+
+
+@api_router.post("/plugins/{plugin_id}/autostart")
+def set_campus_autostart(plugin_id: str, body: dict):
+    script = _campus_autostart_script(plugin_id)
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(422, "enabled 必须是布尔值")
+    store = PluginConfigStore(plugin_id)
+    config = store.get()
+    config["autostart"] = enabled
+    store.save(config)
+    result = _run_campus_autostart(
+        script, "--install" if enabled else "--uninstall")
+    return {"ok": True, "autostart": bool(result.get("installed")), **result}
 
 
 @api_router.get("/plugins/{plugin_id}/review")

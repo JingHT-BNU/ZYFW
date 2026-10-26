@@ -413,6 +413,11 @@
 
       async function startPlugin(id) {
         try {
+          if (id === "campus-network-auth"
+              && typeof window.ZyfwCampusSave === "function") {
+            const saved = await window.ZyfwCampusSave();
+            if (!saved) return;
+          }
           if (id === "bdata-autoplay") {
             if (typeof window.ZyfwBnuSave === "function") {
               const saved = await window.ZyfwBnuSave();

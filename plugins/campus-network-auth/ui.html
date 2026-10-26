@@ -1,0 +1,256 @@
+<div class="zy-config" id="campus-auth-ui">
+  <div class="zy-alert zy-warn">
+    这里的账号密码是校园网深澜认证账号，不是北师大统一身份认证账号。
+    密码由 ZYFW 的 Fernet 配置存储加密，开机自启进程只读取本机配置。
+  </div>
+
+  <div class="zy-row">
+    <button class="zy-btn zy-primary" id="campus-save">保存配置</button>
+    <button class="zy-btn" id="campus-apply-autostart">保存并应用开机自启</button>
+    <span class="zy-hint" id="campus-autostart-state">正在读取开机自启状态…</span>
+  </div>
+
+  <div class="zy-row">
+    <div class="zy-field">
+      <label>校园网账号</label>
+      <input type="text" id="campus-username" autocomplete="username">
+    </div>
+    <div class="zy-field">
+      <label>校园网密码</label>
+      <input type="password" id="campus-password" autocomplete="current-password"
+        placeholder="已加密存储">
+    </div>
+  </div>
+
+  <div class="zy-row">
+    <div class="zy-field">
+      <label>有线认证地址</label>
+      <input type="text" id="campus-wired-portal"
+        placeholder="主机名、IP 或完整 URL">
+    </div>
+    <div class="zy-field">
+      <label>无线认证地址</label>
+      <input type="text" id="campus-wireless-portal"
+        placeholder="主机名、IP 或完整 URL">
+    </div>
+  </div>
+
+  <div class="zy-row">
+    <div class="zy-field">
+      <label>网络类型</label>
+      <select id="campus-connection-mode">
+        <option value="auto">自动检测</option>
+        <option value="wired">有线</option>
+        <option value="wireless">无线</option>
+      </select>
+    </div>
+    <div class="zy-field">
+      <label>终端类型</label>
+      <select id="campus-login-type">
+        <option value="1">电脑</option>
+        <option value="0">手机</option>
+      </select>
+    </div>
+    <div class="zy-field">
+      <label>AC ID</label>
+      <input type="text" id="campus-ac-id">
+    </div>
+    <div class="zy-field">
+      <label>绑定 IP（通常留空）</label>
+      <input type="text" id="campus-ip">
+    </div>
+  </div>
+
+  <div class="zy-row">
+    <div class="zy-field">
+      <label>最大尝试次数</label>
+      <input type="number" id="campus-attempts" min="1" max="100" step="1">
+    </div>
+    <div class="zy-field">
+      <label>重试间隔（秒）</label>
+      <input type="number" id="campus-retry" min="1" max="300" step="1">
+    </div>
+    <div class="zy-field">
+      <label>请求超时（秒）</label>
+      <input type="number" id="campus-timeout" min="2" max="60" step="1">
+    </div>
+  </div>
+
+  <div class="zy-row">
+    <div class="zy-field">
+      <label>开机自启</label>
+      <label class="zy-hint">
+        <input type="checkbox" id="campus-autostart"> 当前用户登录后自动认证
+      </label>
+      <span class="zy-hint">
+        注册项会直接运行插件自带的独立脚本，不要求 ZYFW 同时启动。
+      </span>
+    </div>
+  </div>
+
+  <div class="zy-alert" id="campus-msg" hidden></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var Z = window.ZyfwConfigUI;
+  if (!Z) return;
+  var $ = function (id) { return document.getElementById(id); };
+  var pluginId = "campus-network-auth";
+  var saveTimer = null;
+  var installedAutostart = false;
+
+  function show(text, error) {
+    var el = $("campus-msg");
+    el.textContent = text;
+    el.className = "zy-alert" + (error ? " zy-error" : "");
+    el.hidden = false;
+  }
+
+  function config(autostartOverride) {
+    return {
+      username: $("campus-username").value.trim(),
+      password: $("campus-password").value,
+      wired_portal: $("campus-wired-portal").value.trim(),
+      wireless_portal: $("campus-wireless-portal").value.trim(),
+      connection_mode: $("campus-connection-mode").value,
+      login_type: $("campus-login-type").value,
+      ac_id: $("campus-ac-id").value.trim() || "1",
+      ip: $("campus-ip").value.trim(),
+      max_attempts: Math.max(1, Number($("campus-attempts").value) || 3),
+      retry_interval: Math.max(1, Number($("campus-retry").value) || 10),
+      request_timeout: Math.max(2, Number($("campus-timeout").value) || 10),
+      autostart: autostartOverride === undefined
+        ? installedAutostart
+        : Boolean(autostartOverride)
+    };
+  }
+
+  async function saveConfig(silent, autostartOverride) {
+    var cfg = config(autostartOverride);
+    if (!cfg.username || !cfg.password) {
+      throw new Error("请填写校园网账号和密码");
+    }
+    if (!cfg.wired_portal && !cfg.wireless_portal) {
+      throw new Error("请至少填写一个认证地址");
+    }
+    await Z.saveConfig(cfg);
+    if (!silent) {
+      Z.message("success", "校园网认证配置已保存");
+    }
+    return cfg;
+  }
+
+  function scheduleSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      saveConfig(true).catch(function () {
+        /* Incomplete edits are expected while typing. */
+      });
+    }, 400);
+  }
+
+  function renderStatus(data) {
+    var installed = !!(data && data.installed);
+    installedAutostart = installed;
+    $("campus-autostart").checked = installed;
+    $("campus-autostart-state").textContent = installed
+      ? "开机自启已注册 · " + (data.method || "system")
+      : "开机自启未注册";
+  }
+
+  async function loadStatus() {
+    try {
+      renderStatus(await Z.api(
+        "plugins/" + pluginId + "/autostart"));
+    } catch (e) {
+      $("campus-autostart-state").textContent =
+        "开机自启状态读取失败: " + e.message;
+    }
+  }
+
+  async function applyAutostart() {
+    try {
+      var enabled = $("campus-autostart").checked;
+      await saveConfig(true, enabled);
+      var result = await Z.api("plugins/" + pluginId + "/autostart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: enabled })
+      });
+      if (result.ok === false) {
+        throw new Error(result.error || "开机自启配置失败");
+      }
+      renderStatus(result);
+      Z.message("success", enabled
+        ? "已注册独立开机自启"
+        : "已移除开机自启");
+      show(enabled
+        ? "开机自启已注册。ZYFW 未运行时，系统也会在用户登录后尝试校园网认证。"
+        : "开机自启已关闭。", false);
+    } catch (e) {
+      Z.message("error", e.message);
+      show("开机自启配置失败: " + e.message, true);
+    }
+  }
+
+  async function init() {
+    var cfg = await Z.getConfig();
+    $("campus-username").value = cfg.username || "";
+    $("campus-password").value = cfg.password || "";
+    $("campus-wired-portal").value = cfg.wired_portal || "";
+    $("campus-wireless-portal").value = cfg.wireless_portal || "";
+    $("campus-connection-mode").value =
+      cfg.connection_mode || "auto";
+    $("campus-login-type").value = cfg.login_type || "1";
+    $("campus-ac-id").value = cfg.ac_id || "1";
+    $("campus-ip").value = cfg.ip || "";
+    $("campus-attempts").value = cfg.max_attempts || 3;
+    $("campus-retry").value = cfg.retry_interval || 10;
+    $("campus-timeout").value = cfg.request_timeout || 10;
+    $("campus-autostart").checked = cfg.autostart === true;
+
+    $("campus-save").addEventListener("click", function () {
+      if ($("campus-autostart").checked !== installedAutostart) {
+        Z.message("warning", "开机自启状态有变化，请使用“保存并应用开机自启”");
+        return;
+      }
+      saveConfig(false).then(function () {
+        show("配置已保存。返回仪表盘点击“启动”即可立即认证。", false);
+      }).catch(function (e) {
+        Z.message("error", e.message);
+      });
+    });
+    $("campus-apply-autostart").addEventListener("click", applyAutostart);
+    [
+      "campus-username", "campus-password", "campus-wired-portal",
+      "campus-wireless-portal", "campus-connection-mode",
+      "campus-login-type", "campus-ac-id", "campus-ip",
+      "campus-attempts", "campus-retry", "campus-timeout"
+    ].forEach(function (id) {
+      $(id).addEventListener("change", scheduleSave);
+    });
+    await loadStatus();
+    window.ZyfwCampusSave = function () {
+      return saveConfig(true).then(function () {
+        return true;
+      }).catch(function (e) {
+        Z.message("error", e.message);
+        return false;
+      });
+    };
+    if (cfg.autostart === true && !installedAutostart) {
+      show("配置记录为启用，但当前系统自启项未注册；请点击“保存并应用开机自启”。", true);
+    }
+    window.addEventListener("beforeunload", function () {
+      if (saveTimer) clearTimeout(saveTimer);
+      delete window.ZyfwCampusSave;
+    });
+  }
+
+  init().catch(function (e) {
+    show("配置界面初始化失败: " + e.message, true);
+  });
+})();
+</script>

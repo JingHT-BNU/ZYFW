@@ -1,0 +1,98 @@
+{
+  "id": "campus-network-auth",
+  "name": "校园网认证",
+  "version": "1.0.0",
+  "description": "通过深澜认证接口自动连接北师大校园网，支持有线/无线入口自动识别、失败重试和独立于 ZYFW 的用户级开机自启。",
+  "entry": "plugin.py",
+  "config_ui": "ui.html",
+  "config_schema": [
+    {
+      "key": "username",
+      "label": "校园网账号",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "key": "password",
+      "label": "校园网密码",
+      "type": "password",
+      "default": ""
+    },
+    {
+      "key": "wired_portal",
+      "label": "有线认证地址",
+      "type": "string",
+      "default": "",
+      "hint": "只填主机名或 IP，也可填写完整 URL"
+    },
+    {
+      "key": "wireless_portal",
+      "label": "无线认证地址",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "key": "connection_mode",
+      "label": "网络类型",
+      "type": "choice",
+      "default": "auto",
+      "choices": ["auto", "wired", "wireless"],
+      "choice_labels": ["自动检测", "有线", "无线"]
+    },
+    {
+      "key": "ac_id",
+      "label": "AC ID",
+      "type": "string",
+      "default": "1"
+    },
+    {
+      "key": "login_type",
+      "label": "终端类型",
+      "type": "choice",
+      "default": "1",
+      "choices": ["1", "0"],
+      "choice_labels": ["电脑", "手机"]
+    },
+    {
+      "key": "ip",
+      "label": "绑定 IP",
+      "type": "string",
+      "default": "",
+      "hint": "通常留空，由程序自动获取"
+    },
+    {
+      "key": "max_attempts",
+      "label": "最大尝试次数",
+      "type": "number",
+      "default": 3,
+      "min": 1,
+      "max": 100,
+      "step": 1
+    },
+    {
+      "key": "retry_interval",
+      "label": "重试间隔（秒）",
+      "type": "number",
+      "default": 10,
+      "min": 1,
+      "max": 300,
+      "step": 1
+    },
+    {
+      "key": "request_timeout",
+      "label": "请求超时（秒）",
+      "type": "number",
+      "default": 10,
+      "min": 2,
+      "max": 60,
+      "step": 1
+    },
+    {
+      "key": "autostart",
+      "label": "开机自启",
+      "type": "bool",
+      "default": false,
+      "hint": "注册当前用户的系统自启项，运行时不依赖 ZYFW 宿主"
+    }
+  ]
+}
