@@ -16,18 +16,11 @@
       <span class="zy-hint" id="bdata-cache-meta">尚未读取任务缓存</span>
     </div>
     <div class="zy-hint">
-      缓存包含每门课程的任务、视频、测试、评论回复要求和任务外视频，以课程 URL 中的 cid 区分。
+      缓存按北师大统一认证账号隔离，并自动读取账号下的全部课程、任务完成情况、
+      视频、测试、评论回复要求和任务外视频。更换账号后请再次刷新。
     </div>
     <div id="bdata-course-plans" class="bdata-course-plans">
       <div class="zy-hint">正在读取任务缓存…</div>
-    </div>
-  </div>
-
-  <div class="zy-row">
-    <div class="zy-field bdata-wide">
-      <label>课程链接（每行一个）</label>
-      <textarea id="bdata-courses" rows="3"
-        placeholder="https://bdata.bnu.edu.cn/course?cid=..."></textarea>
     </div>
   </div>
 
@@ -178,12 +171,6 @@
     el.hidden = false;
   }
 
-  function splitCourses(value) {
-    return String(value || "").split(/\r?\n/).map(function (line) {
-      return line.trim();
-    }).filter(Boolean);
-  }
-
   function collectCoursePlans() {
     var plans = {};
     document.querySelectorAll(".bdata-course-plan").forEach(function (card) {
@@ -205,7 +192,6 @@
 
   function collectConfig() {
     return {
-      course_urls: splitCourses($("bdata-courses").value),
       course_plans: collectCoursePlans(),
       auto_answer: $("bdata-auto-answer").checked,
       comment_reply: $("bdata-comment-reply").checked,
@@ -287,11 +273,6 @@
     }
   }
 
-  function courseCid(url) {
-    var match = String(url || "").match(/[?&]cid=([^&#]+)/);
-    return match ? decodeURIComponent(match[1]) : "";
-  }
-
   function taskSummary(task) {
     var completion = task.completion || {};
     var requirementText = [];
@@ -320,11 +301,11 @@
     return parts.join(" ｜ ");
   }
 
-  function makeTaskPlan(courseUrl, course, plan) {
+  function makeTaskPlan(course, plan) {
     plan = plan && typeof plan === "object" ? plan : {};
     var card = document.createElement("div");
     card.className = "bdata-course-plan";
-    card.setAttribute("data-cid", course ? course.cid : courseCid(courseUrl));
+    card.setAttribute("data-cid", course.cid);
 
     var head = document.createElement("div");
     head.className = "zy-row bdata-plan-head";
@@ -414,25 +395,26 @@
     var currentPlans = document.querySelector(".bdata-course-plan")
       ? collectCoursePlans() : {};
     root.textContent = "";
-    var urls = splitCourses($("bdata-courses").value);
     var plans = Object.assign({}, configuredPlans || {});
     Object.assign(plans, currentPlans);
     var courses = (data && data.courses) || {};
-    if (!urls.length) {
+    var cids = Object.keys(courses);
+    if (!cids.length) {
       var empty = document.createElement("div");
       empty.className = "zy-hint";
-      empty.textContent = "请先填写课程链接，再刷新任务缓存。";
+      empty.textContent = "当前账号尚无课程缓存，请点击“刷新课程任务缓存”。";
       root.appendChild(empty);
-      return;
+    } else {
+      cids.forEach(function (cid) {
+        var course = courses[cid];
+        if (!course || typeof course !== "object") return;
+        root.appendChild(makeTaskPlan(course, plans[cid]));
+      });
     }
-    urls.forEach(function (url) {
-      var cid = courseCid(url);
-      if (!cid) return;
-      root.appendChild(makeTaskPlan(url, courses[cid], plans[cid]));
-    });
+    var account = data && data.account ? "账号 " + data.account + " · " : "";
     $("bdata-cache-meta").textContent = data && data.updated_at
-      ? "缓存更新于 " + data.updated_at + " · " + Object.keys(courses).length + " 门课程"
-      : "尚未生成任务缓存";
+      ? account + "缓存更新于 " + data.updated_at + " · " + cids.length + " 门课程"
+      : account + "尚未生成任务缓存";
   }
 
   async function loadTaskCache(configuredPlans) {
@@ -665,7 +647,6 @@
 
   (async function init() {
     var cfg = await Z.getConfig();
-    $("bdata-courses").value = (cfg.course_urls || []).join("\n");
     $("bdata-auto-answer").checked = cfg.auto_answer === true;
     $("bdata-comment-reply").checked = cfg.comment_reply === true;
     $("bdata-full-auto").checked = cfg.full_auto === true;

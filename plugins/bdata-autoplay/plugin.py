@@ -43,8 +43,10 @@ from llm import (  # noqa: E402
 
 LOGIN_HOME = "https://bdata.bnu.edu.cn/"
 COURSE_DATA_API = "/wechatapi/api/learn/getCourseData"
+COURSE_LIST_API = "/wechatapi/api/learn/getMyCourses"
+USER_BINDS_API = "/wechatapi/api/user/getMyBinds"
 COOKIE_LIFE_SECONDS = 7 * 86400
-TASK_CACHE_VERSION = 2
+TASK_CACHE_VERSION = 3
 
 TASK_BUTTON_XPATH = (
     '//*[@id="app"]/section/main/div/div[2]/div[2]/div/div/div[3]'
@@ -358,6 +360,56 @@ def course_data(driver, cid: str) -> dict:
     return data
 
 
+def _course_items(value: object) -> list[dict]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        for key in ("list", "items", "courses", "data"):
+            nested = value.get(key)
+            if isinstance(nested, list):
+                return [item for item in nested if isinstance(item, dict)]
+    return []
+
+
+def list_my_courses(driver) -> list[dict]:
+    """Return every assigned BData course visible to the logged-in account."""
+    body = api_json(
+        driver,
+        COURSE_LIST_API,
+        {"currentPage": 1, "pageSize": 10000},
+    )
+    courses: list[dict] = []
+    seen: set[str] = set()
+    for item in _course_items(body.get("data")):
+        cid = normalize_title(
+            item.get("_id") or item.get("cid") or item.get("id"))
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        courses.append({
+            "cid": cid,
+            "url": f"https://bdata.bnu.edu.cn/course?cid={cid}",
+            "title": normalize_title(
+                item.get("title") or item.get("name")
+                or item.get("courseName") or item.get("cname")),
+        })
+    return courses
+
+
+def _bound_bnu_account(driver) -> str:
+    body = api_json(driver, USER_BINDS_API, {})
+    binds = body.get("data")
+    if isinstance(binds, dict):
+        binds = binds.get("binds") or binds.get("list") or []
+    if not isinstance(binds, list):
+        return ""
+    for bind in binds:
+        value = normalize_title(bind)
+        if value.lower().startswith("bnucas_"):
+            return value.split("_", 1)[1].strip()
+    return ""
+
+
 def _task_video_entries(driver) -> list[dict]:
     js = """
     const pane = document.getElementById('pane-first');
@@ -576,17 +628,57 @@ def task_cache_path(ctx: PluginContext) -> Path:
     return Path(ctx.datadir) / "course_tasks.json"
 
 
-def load_task_cache(ctx: PluginContext) -> dict:
+def task_cache_account(ctx: PluginContext) -> str:
+    return normalize_title(ctx.username)
+
+
+def _empty_task_cache_store() -> dict:
+    return {
+        "version": TASK_CACHE_VERSION,
+        "updated_at": "",
+        "accounts": {},
+    }
+
+
+def _read_task_cache_store(ctx: PluginContext) -> dict:
     data = _read_json_object(task_cache_path(ctx))
     if not data or data.get("version") != TASK_CACHE_VERSION:
-        return {"version": TASK_CACHE_VERSION, "updated_at": "", "courses": {}}
-    if not isinstance(data.get("courses"), dict):
-        data["courses"] = {}
+        return _empty_task_cache_store()
+    if not isinstance(data.get("accounts"), dict):
+        data["accounts"] = {}
     return data
 
 
+def load_task_cache(ctx: PluginContext) -> dict:
+    account = task_cache_account(ctx)
+    store = _read_task_cache_store(ctx)
+    entry = store["accounts"].get(account)
+    if not isinstance(entry, dict):
+        entry = {}
+    courses = entry.get("courses")
+    return {
+        "version": TASK_CACHE_VERSION,
+        "account": account,
+        "updated_at": str(entry.get("updated_at") or ""),
+        "courses": courses if isinstance(courses, dict) else {},
+    }
+
+
 def save_task_cache(ctx: PluginContext, data: dict) -> None:
-    _write_json_atomic(task_cache_path(ctx), data)
+    account = task_cache_account(ctx)
+    if not account:
+        raise RuntimeError("无法保存课程缓存: 统一认证账号为空")
+    store = _read_task_cache_store(ctx)
+    updated_at = str(
+        data.get("updated_at") or time.strftime("%Y-%m-%d %H:%M:%S"))
+    store["accounts"][account] = {
+        "username": account,
+        "updated_at": updated_at,
+        "courses": data.get("courses")
+        if isinstance(data.get("courses"), dict) else {},
+    }
+    store["updated_at"] = updated_at
+    _write_json_atomic(task_cache_path(ctx), store)
 
 
 def collect_course_menu_videos(driver) -> list[dict]:
@@ -722,13 +814,21 @@ def cache_course_tasks(ctx: PluginContext, driver, course_url: str,
 
 
 def refresh_task_cache(ctx: PluginContext, driver,
-                       courses: list[tuple[str, str]]) -> dict:
+                       discovered: list[dict]) -> dict:
     cache = load_task_cache(ctx)
     errors = 0
-    for index, (course_url, cid) in enumerate(courses, start=1):
+    current_cids = {course["cid"] for course in discovered}
+    cache["courses"] = {
+        cid: course for cid, course in cache["courses"].items()
+        if cid in current_cids
+    }
+    for index, course_info in enumerate(discovered, start=1):
+        course_url = course_info["url"]
+        cid = course_info["cid"]
+        title = course_info.get("title") or cid
         ctx.progress(
-            stage="cache", done=index - 1, total=len(courses),
-            title=f"读取任务缓存: {cid}")
+            stage="cache", done=index - 1, total=len(discovered),
+            title=f"读取任务缓存: {title}")
         try:
             course = cache_course_tasks(ctx, driver, course_url, cid)
             cache["courses"][cid] = course
@@ -742,9 +842,11 @@ def refresh_task_cache(ctx: PluginContext, driver,
             errors += 1
             ctx.log(f"课程任务缓存失败({cid}): {exc}")
     ctx.progress(
-        stage="cache", done=len(courses), total=len(courses),
+        stage="cache", done=len(discovered), total=len(discovered),
         title="任务缓存完成")
-    if errors == len(courses):
+    cache["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    save_task_cache(ctx, cache)
+    if errors == len(discovered):
         raise RuntimeError("全部课程任务缓存失败")
     return cache
 
@@ -1310,8 +1412,8 @@ def post_reply(driver, text: str) -> None:
     _submit_first_comment_reply(driver)
 
 
-def _login(ctx: PluginContext, driver, course_url: str) -> None:
-    driver.get(course_url)
+def _login(ctx: PluginContext, driver) -> None:
+    driver.get(LOGIN_HOME)
     login_button = find(driver, LOGIN_BUTTON_XPATH, timeout=12)
     if login_button is None:
         raise RuntimeError("未找到北师大统一身份认证登录入口")
@@ -1342,26 +1444,50 @@ def _login(ctx: PluginContext, driver, course_url: str) -> None:
         raise RuntimeError("统一身份认证登录超时, 请检查账号密码")
 
 
-def ensure_authenticated(ctx: PluginContext, driver, course_url: str,
-                         cid: str) -> None:
+def ensure_authenticated(ctx: PluginContext, driver) -> list[dict]:
+    expected_account = task_cache_account(ctx)
+    if not expected_account:
+        raise RuntimeError("未配置统一身份认证账号")
     cookies = load_cookies(ctx)
     if cookies:
         inject_cookies(driver, cookies)
-        driver.get(course_url)
+        driver.get(LOGIN_HOME)
         time.sleep(1.5)
         try:
-            course_data(driver, cid)
-            ctx.log("使用缓存 Cookie 登录师道云")
-            return
+            bound_account = _bound_bnu_account(driver)
+            if bound_account == expected_account:
+                courses = list_my_courses(driver)
+                ctx.log(
+                    f"使用缓存 Cookie 登录师道云，发现 {len(courses)} 门课程")
+                return courses
+            if bound_account:
+                ctx.log(
+                    f"缓存 Cookie 属于账号 {bound_account}，"
+                    f"当前配置为 {expected_account}，重新登录")
+            else:
+                ctx.log("缓存 Cookie 未绑定当前统一认证账号，重新登录")
         except RuntimeError:
             ctx.log("缓存 Cookie 已失效, 重新执行统一身份认证")
 
+        try:
+            driver.delete_all_cookies()
+        except WebDriverException:
+            pass
+        cookie_file(ctx).unlink(missing_ok=True)
+
     ctx.status("正在登录北师大统一身份认证…")
-    _login(ctx, driver, course_url)
-    driver.get(course_url)
-    course_data(driver, cid)
+    _login(ctx, driver)
+    driver.get(LOGIN_HOME)
+    bound_account = _bound_bnu_account(driver)
+    if bound_account != expected_account:
+        actual = bound_account or "未识别"
+        raise RuntimeError(
+            f"登录账号校验失败: 配置为 {expected_account}, 网页账号为 {actual}")
+    courses = list_my_courses(driver)
     save_cookies(ctx, driver.get_cookies())
-    ctx.log("统一身份认证登录成功, Cookie 已缓存")
+    ctx.log(
+        f"统一身份认证登录成功，发现 {len(courses)} 门课程，Cookie 已缓存")
+    return courses
 
 
 def click_menu_title(driver, title: str) -> bool:
@@ -1686,8 +1812,7 @@ def discover_course_jobs(ctx: PluginContext, driver,
 
 def run_worker(ctx: PluginContext, worker_id: int, jobs: queue.Queue,
                cookies: list[dict], tracker: PlayTracker,
-               first_course: tuple[str, str], speedup: float,
-               tolerance: float, only_unfinished: bool,
+               speedup: float, tolerance: float, only_unfinished: bool,
                initial_driver=None) -> None:
     driver = initial_driver
     current_course = ""
@@ -1695,7 +1820,7 @@ def run_worker(ctx: PluginContext, worker_id: int, jobs: queue.Queue,
         if driver is None:
             driver = make_driver(ctx, headless=bool(ctx.cfg("headless", True)))
             inject_cookies(driver, cookies)
-            ensure_authenticated(ctx, driver, first_course[0], first_course[1])
+            ensure_authenticated(ctx, driver)
 
         while True:
             try:
@@ -1788,13 +1913,12 @@ def run_parallel(ctx: PluginContext, jobs: list[dict], cookies: list[dict],
     work: queue.Queue = queue.Queue()
     for job in jobs:
         work.put(job)
-    first_course = (jobs[0]["course_url"], jobs[0]["cid"])
     threads = []
     for worker_id in range(min(worker_count, len(jobs))):
         thread = threading.Thread(
             target=run_worker,
             args=(
-                ctx, worker_id, work, cookies, tracker, first_course,
+                ctx, worker_id, work, cookies, tracker,
                 speedup, tolerance, only_unfinished,
                 initial_driver if worker_id == 0 else None,
             ),
@@ -2011,7 +2135,7 @@ def run_qa(ctx: PluginContext, driver,
                 ctx.log(f"任务失败: {label}: {exc}")
             ctx.progress(done=done, total=len(work), course=course_title)
         ctx.status(
-            f"答题与互动处理结束: 完成 {done}/{len(work)}，跳过或失败 {skipped}",
+            f"答题与互动处理结束: 完成 {done}/{len(work)}，跳过或失败 {skipped}，如有失败可尝试重启重试",
             done=True)
     finally:
         broker.clear()
@@ -2194,22 +2318,6 @@ def run_combined(ctx: PluginContext, driver,
 
 def main() -> None:
     ctx = PluginContext()
-    raw_urls = ctx.cfg("course_urls") or []
-    if isinstance(raw_urls, str):
-        raw_urls = [raw_urls]
-    if not isinstance(raw_urls, (list, tuple)):
-        raw_urls = []
-
-    courses: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for raw in raw_urls:
-        parsed = parse_course_url(raw)
-        if parsed and parsed[1] not in seen:
-            seen.add(parsed[1])
-            courses.append(parsed)
-    if not courses:
-        ctx.log("未配置有效的师道云课程链接(/course?cid=...),退出")
-        return
     if not ctx.username or not ctx.password:
         ctx.log("未配置统一认证账号(需在全局设置或插件配置中填写),退出")
         return
@@ -2229,11 +2337,14 @@ def main() -> None:
     driver = make_driver(ctx, headless=headless)
     driver.set_page_load_timeout(60)
     try:
-        first_url, first_cid = courses[0]
-        ensure_authenticated(ctx, driver, first_url, first_cid)
+        discovered = ensure_authenticated(ctx, driver)
+        if not discovered:
+            ctx.status("当前统一认证账号下没有可访问的师道云课程", done=True)
+            return
+        courses = [(course["url"], course["cid"]) for course in discovered]
         if task_mode == "crawl":
-            ctx.log("开始刷新课程任务缓存")
-            refresh_task_cache(ctx, driver, courses)
+            ctx.log(f"开始刷新 {len(discovered)} 门课程的任务缓存")
+            refresh_task_cache(ctx, driver, discovered)
             ctx.status("课程任务缓存已更新", done=True)
             return
         run_combined(ctx, driver, courses)

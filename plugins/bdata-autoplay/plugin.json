@@ -1,17 +1,11 @@
 {
   "id": "bdata-autoplay",
   "name": "师道云刷课",
-  "version": "3.0.2",
-  "description": "将师道云刷课、测验、评论和回复合并为单一任务；支持课程任务缓存、按课程与任务范围执行、自动答题/互动以及需要每次启动确认的全自动模式。",
+  "version": "3.1.0",
+  "description": "将师道云刷课、测验、评论和回复合并为单一任务；自动读取当前统一认证账号的全部课程并缓存任务完成情况，支持按课程与任务范围执行、自动答题/互动以及需要每次启动确认的全自动模式。",
   "entry": "plugin.py",
   "config_ui": "ui.html",
   "config_schema": [
-    {
-      "key": "course_urls",
-      "label": "课程链接",
-      "type": "string-list",
-      "hint": "一行一个师道云课程 URL，例如 https://bdata.bnu.edu.cn/course?cid=..."
-    },
     {
       "key": "course_plans",
       "label": "课程与任务范围",

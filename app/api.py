@@ -23,7 +23,7 @@ global_config = GlobalConfig()
 runner = Runner()
 pm = PluginManager(runner)
 _BDATA_ID = "bdata-autoplay"
-_BDATA_TASK_CACHE_VERSION = 2
+_BDATA_TASK_CACHE_VERSION = 3
 
 # ---------------- 窗口关闭自动退出 ----------------
 # 页面通过 WebSocket 保持连接;所有客户端断开且宽限期内无人重连(如页面刷新)时,
@@ -88,12 +88,14 @@ def _effective_plugin_config(plugin: dict, cfg: dict) -> dict:
     src = effective.get("account")
     if not isinstance(src, dict):
         src = {}
+    plugin_username = src.get("username") or effective.get("username") or ""
+    plugin_password = src.get("password") or effective.get("password") or ""
     gsrc = g.get("account")
     if not isinstance(gsrc, dict):
         gsrc = {}
     merged = {
-        "username": src.get("username") or gsrc.get("username") or "",
-        "password": src.get("password") or gsrc.get("password") or "",
+        "username": plugin_username or gsrc.get("username") or "",
+        "password": plugin_password or gsrc.get("password") or "",
     }
     effective["account"] = merged
     effective["username"] = merged["username"]
@@ -293,14 +295,39 @@ def _read_json_object(path: Path) -> dict | None:
 
 @api_router.get("/plugins/{plugin_id}/tasks")
 def get_bdata_tasks(plugin_id: str):
+    if plugin_id != _BDATA_ID:
+        raise HTTPException(404, f"插件不存在: {plugin_id}")
+    try:
+        plugin = pm.get_plugin(plugin_id)
+    except PluginError as e:
+        raise HTTPException(404, str(e)) from e
+    cfg = PluginConfigStore(plugin_id).get()
+    effective = _effective_plugin_config(plugin, cfg)
+    account = str(effective.get("username") or "").strip()
     data = _read_json_object(_bdata_task_cache_path(plugin_id))
     if not data or data.get("version") != _BDATA_TASK_CACHE_VERSION:
         return {
             "version": _BDATA_TASK_CACHE_VERSION,
+            "account": account,
             "updated_at": "",
             "courses": {},
         }
-    return data
+    accounts = data.get("accounts")
+    entry = accounts.get(account) if isinstance(accounts, dict) else None
+    if not isinstance(entry, dict):
+        return {
+            "version": _BDATA_TASK_CACHE_VERSION,
+            "account": account,
+            "updated_at": "",
+            "courses": {},
+        }
+    return {
+        "version": _BDATA_TASK_CACHE_VERSION,
+        "account": account,
+        "updated_at": str(entry.get("updated_at") or ""),
+        "courses": entry.get("courses")
+        if isinstance(entry.get("courses"), dict) else {},
+    }
 
 
 @api_router.post("/plugins/{plugin_id}/tasks/refresh")
@@ -315,6 +342,8 @@ def refresh_bdata_tasks(plugin_id: str):
         raise HTTPException(409, "插件已在运行")
     cfg = PluginConfigStore(plugin_id).get()
     effective = _effective_plugin_config(plugin, cfg)
+    if not effective.get("username") or not effective.get("password"):
+        raise HTTPException(400, "请先填写统一身份认证账号和密码")
     effective["task_mode"] = "crawl"
     for path in _review_paths(plugin_id):
         path.unlink(missing_ok=True)
